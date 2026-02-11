@@ -1,5 +1,6 @@
 #include "VMF/VMFExporter.h"
 #include "VMF/BrushConverter.h"
+#include "Entities/EntityExporter.h"
 #include "Materials/MaterialMapper.h"
 #include "Utilities/SourceCoord.h"
 #include "Engine/Brush.h"
@@ -77,11 +78,26 @@ FString FVMFExporter::ExportScene(UWorld* World)
 
 	Result += WorldNode.Serialize();
 
+	// Export entities (player spawns, lights, etc.)
+	FEntityExportResult EntityResult = FEntityExporter::ExportEntities(World);
+
+	for (const FString& Warning : EntityResult.Warnings)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SourceBridge: %s"), *Warning);
+	}
+
+	// Entity IDs continue after solid IDs
+	int32 EntityIdCounter = SolidIdCounter;
+	for (const FSourceEntity& Entity : EntityResult.Entities)
+	{
+		Result += FEntityExporter::EntityToVMF(Entity, EntityIdCounter++).Serialize();
+	}
+
 	Result += BuildCameras().Serialize();
 	Result += BuildCordon().Serialize();
 
-	UE_LOG(LogTemp, Log, TEXT("SourceBridge: Exported %d brushes (%d skipped) to VMF."),
-		BrushCount, SkippedCount);
+	UE_LOG(LogTemp, Log, TEXT("SourceBridge: Exported %d brushes (%d skipped), %d entities to VMF."),
+		BrushCount, SkippedCount, EntityResult.Entities.Num());
 
 	return Result;
 }
