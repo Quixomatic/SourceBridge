@@ -1,4 +1,5 @@
 #include "Models/SMDExporter.h"
+#include "Utilities/ConvexDecomposition.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/SkeletalMesh.h"
 #include "StaticMeshResources.h"
@@ -435,6 +436,93 @@ TArray<FSMDTriangle> FSMDExporter::ExtractCollisionMesh(UStaticMesh* Mesh, float
 			Tri.Vertices[2].UV = FVector2D(0, 1);
 
 			Triangles.Add(Tri);
+		}
+	}
+
+	// If no simple collision geometry was found, use convex decomposition on the render mesh
+	if (Triangles.Num() == 0)
+	{
+		const FMeshDescription* MeshDesc = Mesh->GetMeshDescription(0);
+		if (MeshDesc)
+		{
+			FStaticMeshConstAttributes Attributes(*MeshDesc);
+			TVertexAttributesConstRef<FVector3f> VertexPositions = Attributes.GetVertexPositions();
+
+			// Collect all vertices and triangle indices from the render mesh
+			TArray<FVector> RenderVerts;
+			TArray<int32> RenderIndices;
+
+			// Build vertex array
+			for (const FVertexID VertexID : MeshDesc->Vertices().GetElementIDs())
+			{
+				FVector3f Pos = VertexPositions[VertexID];
+				RenderVerts.Add(FVector(Pos.X, Pos.Y, Pos.Z));
+			}
+
+			// Build index array from triangulated polygons
+			for (const FPolygonID PolygonID : MeshDesc->Polygons().GetElementIDs())
+			{
+				TArray<FTriangleID> TriangleIDs;
+				MeshDesc->GetPolygonTriangles(PolygonID, TriangleIDs);
+
+				for (const FTriangleID TriangleID : TriangleIDs)
+				{
+					TArrayView<const FVertexInstanceID> TriVertInstances = MeshDesc->GetTriangleVertexInstances(TriangleID);
+					for (int32 i = 0; i < 3; i++)
+					{
+						FVertexID VertexID = MeshDesc->GetVertexInstanceVertex(TriVertInstances[i]);
+						RenderIndices.Add(VertexID.GetValue());
+					}
+				}
+			}
+
+			// Run convex decomposition
+			TArray<FConvexHull> Hulls = FConvexDecomposition::Decompose(RenderVerts, RenderIndices);
+
+			for (const FConvexHull& Hull : Hulls)
+			{
+				for (int32 i = 0; i + 2 < Hull.Indices.Num(); i += 3)
+				{
+					if (!Hull.Vertices.IsValidIndex(Hull.Indices[i]) ||
+						!Hull.Vertices.IsValidIndex(Hull.Indices[i + 1]) ||
+						!Hull.Vertices.IsValidIndex(Hull.Indices[i + 2]))
+					{
+						continue;
+					}
+
+					FVector V0 = Hull.Vertices[Hull.Indices[i]];
+					FVector V1 = Hull.Vertices[Hull.Indices[i + 1]];
+					FVector V2 = Hull.Vertices[Hull.Indices[i + 2]];
+
+					FVector FaceNormal = FVector::CrossProduct(V1 - V0, V2 - V0).GetSafeNormal();
+
+					FSMDTriangle Tri;
+					Tri.MaterialName = TEXT("phys");
+
+					Tri.Vertices[0].BoneIndex = 0;
+					Tri.Vertices[0].Position = ConvertPosition(V0, Scale);
+					Tri.Vertices[0].Normal = ConvertNormal(FaceNormal);
+					Tri.Vertices[0].UV = FVector2D(0, 0);
+
+					Tri.Vertices[1].BoneIndex = 0;
+					Tri.Vertices[1].Position = ConvertPosition(V1, Scale);
+					Tri.Vertices[1].Normal = ConvertNormal(FaceNormal);
+					Tri.Vertices[1].UV = FVector2D(1, 0);
+
+					Tri.Vertices[2].BoneIndex = 0;
+					Tri.Vertices[2].Position = ConvertPosition(V2, Scale);
+					Tri.Vertices[2].Normal = ConvertNormal(FaceNormal);
+					Tri.Vertices[2].UV = FVector2D(0, 1);
+
+					Triangles.Add(Tri);
+				}
+			}
+
+			if (Triangles.Num() > 0)
+			{
+				UE_LOG(LogTemp, Log, TEXT("SourceBridge: Generated collision via convex decomposition - %d hulls, %d triangles"),
+					Hulls.Num(), Triangles.Num());
+			}
 		}
 	}
 
