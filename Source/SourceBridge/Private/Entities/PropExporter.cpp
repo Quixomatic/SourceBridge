@@ -58,7 +58,7 @@ FVMFKeyValues FPropExporter::ExportProp(
 	FString ModelPath = GetModelPath(Actor, Settings.ModelPathPrefix);
 
 	FVector SrcPos = FSourceCoord::UEToSource(Actor->GetActorLocation());
-	FVector SrcAngles = FSourceCoord::UERotationToSourceAngles(Actor->GetActorRotation());
+	FString SrcAngles = FSourceCoord::UERotationToSourceAngles(Actor->GetActorRotation());
 
 	FVMFKeyValues Entity;
 	Entity.ClassName = TEXT("entity");
@@ -66,8 +66,7 @@ FVMFKeyValues FPropExporter::ExportProp(
 	Entity.Properties.Add(TPair<FString, FString>(TEXT("classname"), Classname));
 	Entity.Properties.Add(TPair<FString, FString>(TEXT("origin"),
 		FSourceCoord::FormatVector(SrcPos)));
-	Entity.Properties.Add(TPair<FString, FString>(TEXT("angles"),
-		FString::Printf(TEXT("%g %g %g"), SrcAngles.X, SrcAngles.Y, SrcAngles.Z)));
+	Entity.Properties.Add(TPair<FString, FString>(TEXT("angles"), SrcAngles));
 	Entity.Properties.Add(TPair<FString, FString>(TEXT("model"), ModelPath));
 
 	// Parse additional keyvalues from tags

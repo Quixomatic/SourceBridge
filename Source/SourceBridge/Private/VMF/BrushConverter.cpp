@@ -9,7 +9,8 @@ FBrushConversionResult FBrushConverter::ConvertBrush(
 	int32& SolidIdCounter,
 	int32& SideIdCounter,
 	const FMaterialMapper* MaterialMapper,
-	const FString& DefaultMaterial)
+	const FString& DefaultMaterial,
+	int32 LightmapScale)
 {
 	FBrushConversionResult Result;
 
@@ -42,6 +43,18 @@ FBrushConversionResult FBrushConverter::ConvertBrush(
 	}
 
 	FTransform BrushTransform = Brush->GetActorTransform();
+
+	// Check for per-brush lightmap scale override via tag (e.g., "lightmapscale:8")
+	int32 BrushLightmapScale = LightmapScale;
+	for (const FName& Tag : Brush->Tags)
+	{
+		FString TagStr = Tag.ToString();
+		if (TagStr.StartsWith(TEXT("lightmapscale:"), ESearchCase::IgnoreCase))
+		{
+			BrushLightmapScale = FCString::Atoi(*TagStr.Mid(14));
+			if (BrushLightmapScale < 1) BrushLightmapScale = 16;
+		}
+	}
 
 	// First pass: convert all face vertices to Source space for validation
 	TArray<TArray<FVector>> AllFaceVerticesSource;
@@ -170,7 +183,7 @@ FBrushConversionResult FBrushConverter::ConvertBrush(
 		Side.AddProperty(TEXT("uaxis"), UAxis);
 		Side.AddProperty(TEXT("vaxis"), VAxis);
 		Side.AddProperty(TEXT("rotation"), 0);
-		Side.AddProperty(TEXT("lightmapscale"), 16);
+		Side.AddProperty(TEXT("lightmapscale"), BrushLightmapScale);
 		Side.AddProperty(TEXT("smoothing_groups"), 0);
 
 		Solid.Children.Add(MoveTemp(Side));

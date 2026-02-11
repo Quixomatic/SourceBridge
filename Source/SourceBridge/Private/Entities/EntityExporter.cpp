@@ -68,6 +68,15 @@ FEntityExportResult FEntityExporter::ExportEntities(UWorld* World)
 		}
 	}
 
+	// Collect all unique targetnames for I/O validation
+	for (const FSourceEntity& Entity : Result.Entities)
+	{
+		if (!Entity.TargetName.IsEmpty() && !Result.TargetNames.Contains(Entity.TargetName))
+		{
+			Result.TargetNames.Add(Entity.TargetName);
+		}
+	}
+
 	return Result;
 }
 
@@ -226,12 +235,39 @@ bool FEntityExporter::TryExportLight(AActor* Actor, FEntityExportResult& Result)
 			FMath::RoundToInt(Color.B * 255),
 			FMath::RoundToInt(SourceBrightness)));
 
+		// Better intensity mapping: use attenuation radius
+		float AttenuationRadius = Comp->AttenuationRadius;
+		float FiftyPercDist = AttenuationRadius * 0.525f * 0.5f; // Convert to Source units, 50% distance
+		if (FiftyPercDist > 0)
+		{
+			Entity.AddKeyValue(TEXT("_fifty_percent_distance"), FString::SanitizeFloat(FiftyPercDist));
+		}
+
 		Entity.AddKeyValue(TEXT("_constant_attn"), TEXT("0"));
 		Entity.AddKeyValue(TEXT("_linear_attn"), TEXT("0"));
 		Entity.AddKeyValue(TEXT("_quadratic_attn"), TEXT("1"));
+		Entity.AddKeyValue(TEXT("style"), TEXT("0"));
 
 		ParseActorTags(PointLight, Entity);
 		Result.Entities.Add(MoveTemp(Entity));
+
+		// Export env_sprite alongside point light for glow effect
+		{
+			FSourceEntity Sprite;
+			Sprite.ClassName = TEXT("env_sprite");
+			Sprite.Origin = PointLight->GetActorLocation();
+			Sprite.AddKeyValue(TEXT("model"), TEXT("sprites/glow01.spr"));
+			Sprite.AddKeyValue(TEXT("rendermode"), TEXT("5")); // Additive
+			Sprite.AddKeyValue(TEXT("renderamt"), TEXT("255"));
+			Sprite.AddKeyValue(TEXT("rendercolor"), FString::Printf(TEXT("%d %d %d"),
+				FMath::RoundToInt(Color.R * 255),
+				FMath::RoundToInt(Color.G * 255),
+				FMath::RoundToInt(Color.B * 255)));
+			Sprite.AddKeyValue(TEXT("scale"), TEXT("0.25"));
+			Sprite.AddKeyValue(TEXT("GlowProxySize"), TEXT("2.0"));
+			Result.Entities.Add(MoveTemp(Sprite));
+		}
+
 		return true;
 	}
 
@@ -265,8 +301,29 @@ bool FEntityExporter::TryExportLight(AActor* Actor, FEntityExportResult& Result)
 		Entity.AddKeyValue(TEXT("_cone"),
 			FString::FromInt(FMath::RoundToInt(Comp->OuterConeAngle)));
 
+		// Pitch from rotation
+		FRotator SpotRot = SpotLight->GetActorRotation();
+		Entity.AddKeyValue(TEXT("pitch"), FString::FromInt(FMath::RoundToInt(SpotRot.Pitch)));
+
 		ParseActorTags(SpotLight, Entity);
 		Result.Entities.Add(MoveTemp(Entity));
+
+		// Export env_sprite alongside spot light
+		{
+			FSourceEntity Sprite;
+			Sprite.ClassName = TEXT("env_sprite");
+			Sprite.Origin = SpotLight->GetActorLocation();
+			Sprite.AddKeyValue(TEXT("model"), TEXT("sprites/glow01.spr"));
+			Sprite.AddKeyValue(TEXT("rendermode"), TEXT("5"));
+			Sprite.AddKeyValue(TEXT("renderamt"), TEXT("255"));
+			Sprite.AddKeyValue(TEXT("rendercolor"), FString::Printf(TEXT("%d %d %d"),
+				FMath::RoundToInt(Color.R * 255),
+				FMath::RoundToInt(Color.G * 255),
+				FMath::RoundToInt(Color.B * 255)));
+			Sprite.AddKeyValue(TEXT("scale"), TEXT("0.25"));
+			Result.Entities.Add(MoveTemp(Sprite));
+		}
+
 		return true;
 	}
 
@@ -307,6 +364,7 @@ bool FEntityExporter::TryExportLight(AActor* Actor, FEntityExportResult& Result)
 
 		ParseActorTags(DirLight, Entity);
 		Result.Entities.Add(MoveTemp(Entity));
+		Result.bHasLightEnvironment = true;
 		return true;
 	}
 

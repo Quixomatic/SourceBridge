@@ -38,7 +38,8 @@ public:
 		int32& SolidIdCounter,
 		int32& SideIdCounter,
 		const FMaterialMapper* MaterialMapper = nullptr,
-		const FString& DefaultMaterial = TEXT("DEV/DEV_MEASUREWALL01A"));
+		const FString& DefaultMaterial = TEXT("DEV/DEV_MEASUREWALL01A"),
+		int32 LightmapScale = 16);
 
 	/**
 	 * Validate that a set of face planes form a convex solid.

@@ -1,4 +1,5 @@
 #include "Materials/VMTWriter.h"
+#include "Materials/SurfaceProperties.h"
 
 FVMTWriter::FVMTWriter()
 	: ShaderName(TEXT("LightmappedGeneric"))
@@ -60,7 +61,15 @@ FString FVMTWriter::GenerateBrushVMT(
 	FVMTWriter Writer;
 	Writer.SetShader(TEXT("LightmappedGeneric"));
 	Writer.SetBaseTexture(BaseTexturePath);
-	Writer.SetSurfaceProp(SurfaceProp);
+
+	// Auto-detect surface prop from texture path if using default
+	FString ResolvedProp = SurfaceProp;
+	if (ResolvedProp == TEXT("concrete") || ResolvedProp.IsEmpty())
+	{
+		ResolvedProp = FSurfacePropertiesDatabase::Get().DetectSurfaceProp(BaseTexturePath);
+	}
+	Writer.SetSurfaceProp(ResolvedProp);
+
 	return Writer.Serialize();
 }
 
@@ -71,6 +80,14 @@ FString FVMTWriter::GenerateModelVMT(
 	FVMTWriter Writer;
 	Writer.SetShader(TEXT("VertexLitGeneric"));
 	Writer.SetBaseTexture(BaseTexturePath);
-	Writer.SetSurfaceProp(SurfaceProp);
+
+	// Auto-detect surface prop from texture path if using default
+	FString ResolvedProp = SurfaceProp;
+	if (ResolvedProp == TEXT("metal") || ResolvedProp.IsEmpty())
+	{
+		ResolvedProp = FSurfacePropertiesDatabase::Get().DetectSurfaceProp(BaseTexturePath);
+	}
+	Writer.SetSurfaceProp(ResolvedProp);
+
 	return Writer.Serialize();
 }

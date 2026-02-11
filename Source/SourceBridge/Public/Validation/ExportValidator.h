@@ -97,4 +97,10 @@ private:
 
 	/** Check team spawn balance for CS:S. */
 	static void ValidateSpawns(UWorld* World, FValidationResult& Result);
+
+	/** Validate entity classnames and keyvalues against loaded FGD. */
+	static void ValidateEntityClassnames(UWorld* World, FValidationResult& Result);
+
+	/** Validate surface property names. */
+	static void ValidateSurfaceProperties(UWorld* World, FValidationResult& Result);
 };

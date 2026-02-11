@@ -40,6 +40,12 @@ struct SOURCEBRIDGE_API FEntityExportResult
 {
 	TArray<FSourceEntity> Entities;
 	TArray<FString> Warnings;
+
+	/** Whether a light_environment entity was exported. */
+	bool bHasLightEnvironment = false;
+
+	/** All unique targetnames found (for I/O validation). */
+	TArray<FString> TargetNames;
 };
 
 /**

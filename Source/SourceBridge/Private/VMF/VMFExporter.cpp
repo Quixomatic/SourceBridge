@@ -1,6 +1,8 @@
 #include "VMF/VMFExporter.h"
 #include "VMF/BrushConverter.h"
+#include "VMF/SkyboxExporter.h"
 #include "Entities/EntityExporter.h"
+#include "Entities/PropExporter.h"
 #include "Materials/MaterialMapper.h"
 #include "Utilities/SourceCoord.h"
 #include "Engine/Brush.h"
@@ -22,20 +24,35 @@ FString FVMFExporter::ExportScene(UWorld* World)
 	Result += BuildVisGroups().Serialize();
 	Result += BuildViewSettings().Serialize();
 
-	// Build world block
-	FVMFKeyValues WorldNode(TEXT("world"));
-	WorldNode.AddProperty(TEXT("id"), 1);
-	WorldNode.AddProperty(TEXT("mapversion"), 1);
-	WorldNode.AddProperty(TEXT("classname"), TEXT("worldspawn"));
-	WorldNode.AddProperty(TEXT("skyname"), TEXT("sky_day01_01"));
-	WorldNode.AddProperty(TEXT("maxpropscreenwidth"), -1);
-	WorldNode.AddProperty(TEXT("detailvbsp"), TEXT("detail.vbsp"));
-	WorldNode.AddProperty(TEXT("detailmaterial"), TEXT("detail/detailsprites"));
-
 	int32 SolidIdCounter = 2;  // worldspawn is id 1
 	int32 SideIdCounter = 1;
 	int32 BrushCount = 0;
 	int32 SkippedCount = 0;
+
+	// Export entities first so we can read results (skyname, light_environment, etc.)
+	FEntityExportResult EntityResult = FEntityExporter::ExportEntities(World);
+
+	for (const FString& Warning : EntityResult.Warnings)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SourceBridge: %s"), *Warning);
+	}
+
+	// Export skybox (detects sky_camera actors, skyname tags)
+	FSkyboxSettings SkySettings;
+	int32 EntityIdCounter = 1000; // temporary, reassigned below
+	FSkyboxData SkyData = FSkyboxExporter::ExportSkybox(
+		World, EntityIdCounter, SolidIdCounter, SideIdCounter, SkySettings);
+
+	// Build world block with dynamic skyname
+	FVMFKeyValues WorldNode(TEXT("world"));
+	WorldNode.AddProperty(TEXT("id"), 1);
+	WorldNode.AddProperty(TEXT("mapversion"), 1);
+	WorldNode.AddProperty(TEXT("classname"), TEXT("worldspawn"));
+	WorldNode.AddProperty(TEXT("skyname"), SkyData.SkyName.IsEmpty()
+		? TEXT("sky_day01_01") : *SkyData.SkyName);
+	WorldNode.AddProperty(TEXT("maxpropscreenwidth"), -1);
+	WorldNode.AddProperty(TEXT("detailvbsp"), TEXT("detail.vbsp"));
+	WorldNode.AddProperty(TEXT("detailmaterial"), TEXT("detail/detailsprites"));
 
 	// Material mapper resolves UE materials to Source material paths
 	FMaterialMapper MatMapper;
@@ -76,28 +93,42 @@ FString FVMFExporter::ExportScene(UWorld* World)
 		}
 	}
 
-	Result += WorldNode.Serialize();
-
-	// Export entities (player spawns, lights, etc.)
-	FEntityExportResult EntityResult = FEntityExporter::ExportEntities(World);
-
-	for (const FString& Warning : EntityResult.Warnings)
+	// Add skybox shell brushes to worldspawn
+	for (FVMFKeyValues& SkyBrush : SkyData.SkyboxBrushes)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("SourceBridge: %s"), *Warning);
+		WorldNode.Children.Add(MoveTemp(SkyBrush));
 	}
 
+	Result += WorldNode.Serialize();
+
 	// Entity IDs continue after solid IDs
-	int32 EntityIdCounter = SolidIdCounter;
+	EntityIdCounter = SolidIdCounter;
+
+	// Write point entities (spawns, lights, triggers, etc.)
 	for (const FSourceEntity& Entity : EntityResult.Entities)
 	{
 		Result += FEntityExporter::EntityToVMF(Entity, EntityIdCounter++).Serialize();
 	}
 
+	// Write sky_camera entity if present
+	if (SkyData.bHasSkyCamera)
+	{
+		Result += SkyData.SkyCameraEntity.Serialize();
+	}
+
+	// Export static mesh actors as prop entities
+	TArray<FVMFKeyValues> PropEntities = FPropExporter::ExportProps(
+		World, EntityIdCounter);
+	for (const FVMFKeyValues& PropEntity : PropEntities)
+	{
+		Result += PropEntity.Serialize();
+	}
+
 	Result += BuildCameras().Serialize();
 	Result += BuildCordon().Serialize();
 
-	UE_LOG(LogTemp, Log, TEXT("SourceBridge: Exported %d brushes (%d skipped), %d entities to VMF."),
-		BrushCount, SkippedCount, EntityResult.Entities.Num());
+	UE_LOG(LogTemp, Log, TEXT("SourceBridge: Exported %d brushes (%d skipped), %d entities, %d props to VMF."),
+		BrushCount, SkippedCount, EntityResult.Entities.Num(), PropEntities.Num());
 
 	return Result;
 }

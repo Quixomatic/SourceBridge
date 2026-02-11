@@ -5,6 +5,7 @@
 #include "Models/QCWriter.h"
 #include "Pipeline/FullExportPipeline.h"
 #include "Validation/ExportValidator.h"
+#include "Entities/FGDParser.h"
 #include "UI/SourceBridgeToolbar.h"
 #include "HAL/PlatformFilemanager.h"
 #include "Misc/FileHelper.h"
@@ -12,6 +13,18 @@
 #include "Engine/StaticMeshActor.h"
 #include "Engine/Selection.h"
 #include "Editor.h"
+
+FFGDDatabase FSourceBridgeModule::FGDDatabase;
+
+const FFGDDatabase& FSourceBridgeModule::GetFGDDatabase()
+{
+	return FGDDatabase;
+}
+
+void FSourceBridgeModule::LoadFGD(const FString& FilePath)
+{
+	FGDDatabase = FFGDParser::ParseFile(FilePath);
+}
 
 #define LOCTEXT_NAMESPACE "FSourceBridgeModule"
 
@@ -280,7 +293,86 @@ void FSourceBridgeModule::StartupModule()
 		})
 	);
 
-	UE_LOG(LogTemp, Log, TEXT("SourceBridge plugin loaded. Commands: SourceBridge.ExportScene, SourceBridge.ExportTestBoxRoom, SourceBridge.CompileMap, SourceBridge.ExportModel, SourceBridge.FullExport, SourceBridge.Validate"));
+	LoadFGDCommand = MakeShared<FAutoConsoleCommand>(
+		TEXT("SourceBridge.LoadFGD"),
+		TEXT("Load an FGD file for entity validation. Usage: SourceBridge.LoadFGD <fgd_path>"),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			if (Args.Num() < 1)
+			{
+				UE_LOG(LogTemp, Error, TEXT("SourceBridge: Usage: SourceBridge.LoadFGD <fgd_path>"));
+				return;
+			}
+
+			FSourceBridgeModule::LoadFGD(Args[0]);
+
+			const FFGDDatabase& DB = FSourceBridgeModule::GetFGDDatabase();
+			UE_LOG(LogTemp, Log, TEXT("SourceBridge: FGD loaded. %d entity classes (%d warnings)."),
+				DB.Classes.Num(), DB.Warnings.Num());
+
+			for (const FString& Warning : DB.Warnings)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("SourceBridge FGD: %s"), *Warning);
+			}
+		})
+	);
+
+	ListEntitiesCommand = MakeShared<FAutoConsoleCommand>(
+		TEXT("SourceBridge.ListEntities"),
+		TEXT("List all entity classes from loaded FGD. Usage: SourceBridge.ListEntities [filter]"),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			const FFGDDatabase& DB = FSourceBridgeModule::GetFGDDatabase();
+
+			if (DB.Classes.Num() == 0)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("SourceBridge: No FGD loaded. Use SourceBridge.LoadFGD first."));
+				return;
+			}
+
+			FString Filter = Args.Num() > 0 ? Args[0] : TEXT("");
+
+			TArray<FString> Names = DB.GetPlaceableClassNames();
+			int32 Shown = 0;
+
+			for (const FString& Name : Names)
+			{
+				if (!Filter.IsEmpty() && !Name.Contains(Filter))
+				{
+					continue;
+				}
+
+				const FFGDEntityClass* Class = DB.FindClass(Name);
+				if (Class)
+				{
+					UE_LOG(LogTemp, Log, TEXT("  [%s] %s - %s"),
+						Class->bIsSolid ? TEXT("SOLID") : TEXT("POINT"),
+						*Class->ClassName,
+						Class->Description.IsEmpty() ? TEXT("") : *Class->Description.Left(80));
+					Shown++;
+				}
+			}
+
+			UE_LOG(LogTemp, Log, TEXT("SourceBridge: %d entities listed (of %d total, %d base classes)."),
+				Shown, Names.Num(), DB.Classes.Num() - Names.Num());
+		})
+	);
+
+	// Auto-load FGD from Resources directory if present
+	FString PluginFGDPath = FPaths::ProjectPluginsDir() / TEXT("SourceBridge") / TEXT("Resources") / TEXT("cstrike.fgd");
+	if (!FPaths::FileExists(PluginFGDPath))
+	{
+		// Try from project root (common layout)
+		PluginFGDPath = FPaths::ProjectDir() / TEXT("Resources") / TEXT("cstrike.fgd");
+	}
+	if (FPaths::FileExists(PluginFGDPath))
+	{
+		LoadFGD(PluginFGDPath);
+		UE_LOG(LogTemp, Log, TEXT("SourceBridge: Auto-loaded FGD from %s (%d classes)."),
+			*PluginFGDPath, FGDDatabase.Classes.Num());
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("SourceBridge plugin loaded. Commands: ExportScene, ExportTestBoxRoom, CompileMap, ExportModel, FullExport, Validate, LoadFGD, ListEntities"));
 }
 
 void FSourceBridgeModule::ShutdownModule()
@@ -293,6 +385,8 @@ void FSourceBridgeModule::ShutdownModule()
 	ExportModelCommand.Reset();
 	FullExportCommand.Reset();
 	ValidateCommand.Reset();
+	LoadFGDCommand.Reset();
+	ListEntitiesCommand.Reset();
 }
 
 #undef LOCTEXT_NAMESPACE
