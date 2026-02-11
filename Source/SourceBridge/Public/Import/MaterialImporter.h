@@ -87,8 +87,13 @@ private:
 	/** Cache of resolved materials (Source path → UE material) */
 	static TMap<FString, UMaterialInterface*> MaterialCache;
 
-	/** Cache of texture dimensions (Source material path → width,height) */
-	static TMap<FString, FIntPoint> TextureSizeCache;
+	/** Texture info cached when VTFs are loaded */
+	struct FTextureCacheEntry
+	{
+		FIntPoint Size = FIntPoint(512, 512);
+		bool bHasAlpha = false;
+	};
+	static TMap<FString, FTextureCacheEntry> TextureInfoCache;
 
 	/** Reverse tool texture mapping (Source path → UE tool material name) */
 	static TMap<FString, FString> ReverseToolMappings;
@@ -102,14 +107,17 @@ private:
 	/** Generate a deterministic color from a material name (for placeholders). */
 	static FLinearColor ColorFromName(const FString& Name);
 
-	/** Get or create the shared base material with a TextureSampleParameter2D. */
+	/** Get or create the shared base material with a TextureSampleParameter2D (opaque). */
 	static UMaterial* GetOrCreateTextureBaseMaterial();
+
+	/** Get or create the shared base material for masked/alpha-tested textures. */
+	static UMaterial* GetOrCreateMaskedBaseMaterial();
 
 	/** Get or create the shared base material with a VectorParameter for color. */
 	static UMaterial* GetOrCreateColorBaseMaterial();
 
 	/** Create a MID from the texture base material with the given texture. */
-	static UMaterialInstanceDynamic* CreateTexturedMID(UTexture2D* Texture, const FString& SourceMaterialPath);
+	static UMaterialInstanceDynamic* CreateTexturedMID(UTexture2D* Texture, const FString& SourceMaterialPath, bool bNeedsAlpha = false);
 
 	/** Create a MID from the color base material with the given color. */
 	static UMaterialInstanceDynamic* CreateColorMID(const FLinearColor& Color, const FString& SourceMaterialPath);
@@ -122,5 +130,6 @@ private:
 
 	/** Shared base materials (created once, reused for all MIDs). */
 	static UMaterial* TextureBaseMaterial;
+	static UMaterial* MaskedBaseMaterial;
 	static UMaterial* ColorBaseMaterial;
 };
