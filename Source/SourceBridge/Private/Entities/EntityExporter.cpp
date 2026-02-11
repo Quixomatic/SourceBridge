@@ -1,6 +1,8 @@
 #include "Entities/EntityExporter.h"
 #include "Utilities/SourceCoord.h"
 #include "Engine/World.h"
+#include "Engine/TriggerBox.h"
+#include "Engine/TriggerVolume.h"
 #include "EngineUtils.h"
 #include "GameFramework/PlayerStart.h"
 #include "Components/LightComponent.h"
@@ -46,8 +48,6 @@ FEntityExportResult FEntityExporter::ExportEntities(UWorld* World)
 		return Result;
 	}
 
-	int32 SpawnIndex = 0;
-
 	for (TActorIterator<AActor> It(World); It; ++It)
 	{
 		AActor* Actor = *It;
@@ -61,6 +61,11 @@ FEntityExportResult FEntityExporter::ExportEntities(UWorld* World)
 		{
 			continue;
 		}
+
+		if (TryExportTriggerVolume(Actor, Result))
+		{
+			continue;
+		}
 	}
 
 	return Result;
@@ -71,6 +76,12 @@ FVMFKeyValues FEntityExporter::EntityToVMF(const FSourceEntity& Entity, int32 En
 	FVMFKeyValues Node(TEXT("entity"));
 	Node.AddProperty(TEXT("id"), EntityId);
 	Node.AddProperty(TEXT("classname"), Entity.ClassName);
+
+	// Targetname (if set)
+	if (!Entity.TargetName.IsEmpty())
+	{
+		Node.AddProperty(TEXT("targetname"), Entity.TargetName);
+	}
 
 	// Origin in Source coordinates
 	FVector SourceOrigin = FSourceCoord::UEToSource(Entity.Origin);
@@ -90,21 +101,57 @@ FVMFKeyValues FEntityExporter::EntityToVMF(const FSourceEntity& Entity, int32 En
 	if (Entity.Connections.Num() > 0)
 	{
 		FVMFKeyValues& ConnBlock = Node.AddChild(TEXT("connections"));
-		for (const FString& Conn : Entity.Connections)
+		for (const FEntityIOConnection& Conn : Entity.Connections)
 		{
-			// Format: "OutputName" "target,input,param,delay,refire"
-			// The connection string should already be in this format
-			int32 SpaceIdx;
-			if (Conn.FindChar(TEXT(' '), SpaceIdx))
-			{
-				FString OutputName = Conn.Left(SpaceIdx);
-				FString ConnValue = Conn.Mid(SpaceIdx + 1);
-				ConnBlock.AddProperty(OutputName, ConnValue);
-			}
+			ConnBlock.AddProperty(Conn.OutputName, Conn.FormatValue());
 		}
 	}
 
 	return Node;
+}
+
+void FEntityExporter::ParseActorTags(AActor* Actor, FSourceEntity& Entity)
+{
+	for (const FName& Tag : Actor->Tags)
+	{
+		FString TagStr = Tag.ToString();
+
+		// I/O connections: "io:OutputName:target,input,param,delay,refire"
+		FEntityIOConnection IOConn;
+		if (FEntityIOConnection::ParseFromTag(TagStr, IOConn))
+		{
+			Entity.Connections.Add(MoveTemp(IOConn));
+			continue;
+		}
+
+		// Targetname: "targetname:my_entity_name"
+		if (TagStr.StartsWith(TEXT("targetname:"), ESearchCase::IgnoreCase))
+		{
+			Entity.TargetName = TagStr.Mid(11);
+			continue;
+		}
+
+		// Source classname override: "classname:trigger_once"
+		if (TagStr.StartsWith(TEXT("classname:"), ESearchCase::IgnoreCase))
+		{
+			Entity.ClassName = TagStr.Mid(10);
+			continue;
+		}
+
+		// Arbitrary key-values: "kv:key:value"
+		if (TagStr.StartsWith(TEXT("kv:"), ESearchCase::IgnoreCase))
+		{
+			FString Remainder = TagStr.Mid(3);
+			int32 ColonIdx;
+			if (Remainder.FindChar(TEXT(':'), ColonIdx))
+			{
+				FString Key = Remainder.Left(ColonIdx);
+				FString Value = Remainder.Mid(ColonIdx + 1);
+				Entity.AddKeyValue(Key, Value);
+			}
+			continue;
+		}
+	}
 }
 
 bool FEntityExporter::TryExportPlayerStart(AActor* Actor, FEntityExportResult& Result)
@@ -115,8 +162,6 @@ bool FEntityExporter::TryExportPlayerStart(AActor* Actor, FEntityExportResult& R
 		return false;
 	}
 
-	// Determine team from the PlayerStart's PlayerStartTag or just alternate
-	// In UE, PlayerStart doesn't inherently have a team. We use tags.
 	FString Tag = PlayerStart->PlayerStartTag.ToString();
 
 	FSourceEntity Entity;
@@ -135,8 +180,6 @@ bool FEntityExporter::TryExportPlayerStart(AActor* Actor, FEntityExportResult& R
 	}
 	else
 	{
-		// Default: alternate between T and CT based on count
-		// Count existing spawns to alternate
 		int32 TCount = 0, CTCount = 0;
 		for (const FSourceEntity& E : Result.Entities)
 		{
@@ -148,6 +191,9 @@ bool FEntityExporter::TryExportPlayerStart(AActor* Actor, FEntityExportResult& R
 			? TEXT("info_player_terrorist")
 			: TEXT("info_player_counterterrorist");
 	}
+
+	// Parse any additional tags (targetname, kv, io)
+	ParseActorTags(PlayerStart, Entity);
 
 	Result.Entities.Add(MoveTemp(Entity));
 	return true;
@@ -170,10 +216,8 @@ bool FEntityExporter::TryExportLight(AActor* Actor, FEntityExportResult& Result)
 		Entity.Origin = PointLight->GetActorLocation();
 		Entity.Angles = PointLight->GetActorRotation();
 
-		// Source _light format: "R G B Brightness"
 		FLinearColor Color = Comp->GetLightColor();
 		float Intensity = Comp->Intensity;
-		// Map UE intensity to Source brightness (rough approximation)
 		float SourceBrightness = FMath::Clamp(Intensity * 0.5f, 1.0f, 10000.0f);
 
 		Entity.AddKeyValue(TEXT("_light"), FString::Printf(TEXT("%d %d %d %d"),
@@ -182,11 +226,11 @@ bool FEntityExporter::TryExportLight(AActor* Actor, FEntityExportResult& Result)
 			FMath::RoundToInt(Color.B * 255),
 			FMath::RoundToInt(SourceBrightness)));
 
-		// Attenuation - Source uses constant/linear/quadratic
 		Entity.AddKeyValue(TEXT("_constant_attn"), TEXT("0"));
 		Entity.AddKeyValue(TEXT("_linear_attn"), TEXT("0"));
 		Entity.AddKeyValue(TEXT("_quadratic_attn"), TEXT("1"));
 
+		ParseActorTags(PointLight, Entity);
 		Result.Entities.Add(MoveTemp(Entity));
 		return true;
 	}
@@ -221,6 +265,7 @@ bool FEntityExporter::TryExportLight(AActor* Actor, FEntityExportResult& Result)
 		Entity.AddKeyValue(TEXT("_cone"),
 			FString::FromInt(FMath::RoundToInt(Comp->OuterConeAngle)));
 
+		ParseActorTags(SpotLight, Entity);
 		Result.Entities.Add(MoveTemp(Entity));
 		return true;
 	}
@@ -244,28 +289,54 @@ bool FEntityExporter::TryExportLight(AActor* Actor, FEntityExportResult& Result)
 		float Intensity = Comp->Intensity;
 		float SourceBrightness = FMath::Clamp(Intensity * 100.0f, 1.0f, 10000.0f);
 
-		// Direct sunlight
 		Entity.AddKeyValue(TEXT("_light"), FString::Printf(TEXT("%d %d %d %d"),
 			FMath::RoundToInt(Color.R * 255),
 			FMath::RoundToInt(Color.G * 255),
 			FMath::RoundToInt(Color.B * 255),
 			FMath::RoundToInt(SourceBrightness)));
 
-		// Ambient sky light (rough approximation)
 		Entity.AddKeyValue(TEXT("_ambient"), FString::Printf(TEXT("%d %d %d %d"),
 			FMath::RoundToInt(Color.R * 200),
 			FMath::RoundToInt(Color.G * 200),
 			FMath::RoundToInt(Color.B * 200),
 			FMath::RoundToInt(SourceBrightness * 0.3f)));
 
-		// Sun angle from actor rotation
 		FRotator Rot = DirLight->GetActorRotation();
 		Entity.AddKeyValue(TEXT("pitch"), FString::FromInt(FMath::RoundToInt(Rot.Pitch)));
 		Entity.AddKeyValue(TEXT("SunSpreadAngle"), TEXT("5"));
 
+		ParseActorTags(DirLight, Entity);
 		Result.Entities.Add(MoveTemp(Entity));
 		return true;
 	}
 
 	return false;
+}
+
+bool FEntityExporter::TryExportTriggerVolume(AActor* Actor, FEntityExportResult& Result)
+{
+	// Check for TriggerBox or TriggerVolume
+	ATriggerBox* TriggerBox = Cast<ATriggerBox>(Actor);
+	ATriggerVolume* TriggerVolume = Cast<ATriggerVolume>(Actor);
+
+	if (!TriggerBox && !TriggerVolume)
+	{
+		return false;
+	}
+
+	FSourceEntity Entity;
+	Entity.ClassName = TEXT("trigger_multiple");
+	Entity.Origin = Actor->GetActorLocation();
+	Entity.Angles = Actor->GetActorRotation();
+
+	// Default trigger properties
+	Entity.AddKeyValue(TEXT("spawnflags"), TEXT("1")); // Clients only
+	Entity.AddKeyValue(TEXT("StartDisabled"), TEXT("0"));
+	Entity.AddKeyValue(TEXT("wait"), TEXT("1")); // 1 second between triggers
+
+	// Parse actor tags for targetname, classname override, keyvalues, I/O
+	ParseActorTags(Actor, Entity);
+
+	Result.Entities.Add(MoveTemp(Entity));
+	return true;
 }
