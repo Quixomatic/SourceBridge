@@ -78,24 +78,25 @@ FVMFKeyValues FVisOptimizer::GenerateHintBrush(
 
 	TArray<FFaceInfo> Faces;
 
-	// Top (+Z)
+	// VMF convention: (P2-P1)x(P3-P1) points INWARD into the solid.
+	// Top (z=z2, inward = -Z)
 	Faces.Add({FVector(0, 0, 1), FString::Printf(TEXT("(%g %g %g) (%g %g %g) (%g %g %g)"),
-		x1, y1, z2, x2, y1, z2, x2, y2, z2)});
-	// Bottom (-Z)
+		x1, y2, z2, x2, y2, z2, x2, y1, z2)});
+	// Bottom (z=z1, inward = +Z)
 	Faces.Add({FVector(0, 0, -1), FString::Printf(TEXT("(%g %g %g) (%g %g %g) (%g %g %g)"),
-		x1, y2, z1, x2, y2, z1, x2, y1, z1)});
-	// Front (+Y)
+		x1, y1, z1, x2, y1, z1, x2, y2, z1)});
+	// Front (y=y2, inward = -Y)
 	Faces.Add({FVector(0, 1, 0), FString::Printf(TEXT("(%g %g %g) (%g %g %g) (%g %g %g)"),
-		x1, y2, z2, x2, y2, z2, x2, y2, z1)});
-	// Back (-Y)
+		x2, y2, z2, x1, y2, z2, x1, y2, z1)});
+	// Back (y=y1, inward = +Y)
 	Faces.Add({FVector(0, -1, 0), FString::Printf(TEXT("(%g %g %g) (%g %g %g) (%g %g %g)"),
-		x1, y1, z1, x2, y1, z1, x2, y1, z2)});
-	// Right (+X)
+		x2, y1, z1, x1, y1, z1, x1, y1, z2)});
+	// Right (x=x2, inward = -X)
 	Faces.Add({FVector(1, 0, 0), FString::Printf(TEXT("(%g %g %g) (%g %g %g) (%g %g %g)"),
-		x2, y1, z1, x2, y2, z1, x2, y2, z2)});
-	// Left (-X)
+		x2, y2, z1, x2, y1, z1, x2, y1, z2)});
+	// Left (x=x1, inward = +X)
 	Faces.Add({FVector(-1, 0, 0), FString::Printf(TEXT("(%g %g %g) (%g %g %g) (%g %g %g)"),
-		x1, y1, z2, x1, y2, z2, x1, y2, z1)});
+		x1, y2, z2, x1, y1, z2, x1, y1, z1)});
 
 	FVector NormalNorm = Normal.GetSafeNormal();
 	if (NormalNorm.IsNearlyZero()) NormalNorm = FVector(1, 0, 0);

@@ -136,8 +136,10 @@ FBrushConversionResult FBrushConverter::ConvertBrush(
 		}
 
 		// Pick 3 non-collinear points for the plane definition.
-		// After UE->Source conversion (Y negated), we need REVERSED winding
-		// to maintain outward-facing normals in the right-handed system.
+		// VMF convention: (P2-P1)x(P3-P1) must point INWARD into the solid.
+		// UE stores vertices CCW from outside (outward normal in left-handed).
+		// After Y negation (UE->Source), winding flips, producing inward normals
+		// via (P2-P1)x(P3-P1) in the right-handed system. No swap needed.
 		FVector P1, P2, P3;
 		if (!Pick3PlanePoints(Verts, P1, P2, P3))
 		{
@@ -147,12 +149,10 @@ FBrushConversionResult FBrushConverter::ConvertBrush(
 			continue;
 		}
 
-		// Reverse winding: swap P2 and P3 to flip normal direction
-		// because negating Y flips handedness
 		FString PlaneStr = FString::Printf(TEXT("(%g %g %g) (%g %g %g) (%g %g %g)"),
 			FMath::RoundToFloat(P1.X), FMath::RoundToFloat(P1.Y), FMath::RoundToFloat(P1.Z),
-			FMath::RoundToFloat(P3.X), FMath::RoundToFloat(P3.Y), FMath::RoundToFloat(P3.Z),
-			FMath::RoundToFloat(P2.X), FMath::RoundToFloat(P2.Y), FMath::RoundToFloat(P2.Z));
+			FMath::RoundToFloat(P2.X), FMath::RoundToFloat(P2.Y), FMath::RoundToFloat(P2.Z),
+			FMath::RoundToFloat(P3.X), FMath::RoundToFloat(P3.Y), FMath::RoundToFloat(P3.Z));
 
 		// Resolve material
 		FString MaterialPath = DefaultMaterial;

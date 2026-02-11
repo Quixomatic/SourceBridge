@@ -34,7 +34,6 @@ void FSourceBridgeModule::LoadFGD(const FString& FilePath)
 
 void FSourceBridgeModule::StartupModule()
 {
-	// Register toolbar UI, detail customizations, and entity palette
 	FSourceBridgeToolbar::Register();
 	FSourceEntityDetailCustomization::Register();
 	FSourceEntityPaletteTab::Register();
@@ -406,17 +405,13 @@ void FSourceBridgeModule::StartupModule()
 	FString PluginFGDPath = FPaths::ProjectPluginsDir() / TEXT("SourceBridge") / TEXT("Resources") / TEXT("cstrike.fgd");
 	if (!FPaths::FileExists(PluginFGDPath))
 	{
-		// Try from project root (common layout)
 		PluginFGDPath = FPaths::ProjectDir() / TEXT("Resources") / TEXT("cstrike.fgd");
 	}
 	if (FPaths::FileExists(PluginFGDPath))
 	{
 		LoadFGD(PluginFGDPath);
-		UE_LOG(LogTemp, Log, TEXT("SourceBridge: Auto-loaded FGD from %s (%d classes)."),
-			*PluginFGDPath, FGDDatabase.Classes.Num());
+		UE_LOG(LogTemp, Log, TEXT("SourceBridge: Auto-loaded FGD. %d entity classes."), FGDDatabase.Classes.Num());
 	}
-
-	UE_LOG(LogTemp, Log, TEXT("SourceBridge plugin loaded. Commands: ExportScene, ExportTestBoxRoom, CompileMap, ExportModel, FullExport, Validate, LoadFGD, ListEntities, AnalyzeVis"));
 }
 
 void FSourceBridgeModule::ShutdownModule()

@@ -337,46 +337,47 @@ FVMFKeyValues FVMFExporter::BuildAABBSolid(
 	Solid.AddProperty(TEXT("id"), SolidId);
 
 	// An axis-aligned box has 6 faces.
-	// Plane points must be wound so (P2-P1)x(P3-P1) gives the outward normal.
+	// VMF convention: (P2-P1)x(P3-P1) must point INWARD into the solid.
+	// Points appear clockwise when viewed from outside the solid.
 
 	double x1 = Min.X, y1 = Min.Y, z1 = Min.Z;
 	double x2 = Max.X, y2 = Max.Y, z2 = Max.Z;
 
 	FString UAxis, VAxis;
 
-	// Top face (+Z normal)
+	// Top face (z=z2, inward normal = -Z)
 	FString TopPlane = FString::Printf(TEXT("(%g %g %g) (%g %g %g) (%g %g %g)"),
-		x1, y1, z2,  x2, y1, z2,  x2, y2, z2);
+		x1, y2, z2,  x2, y2, z2,  x2, y1, z2);
 	GetDefaultUVAxes(FVector(0, 0, 1), UAxis, VAxis);
 	Solid.Children.Add(BuildSide(SideIdCounter++, TopPlane, Material, UAxis, VAxis));
 
-	// Bottom face (-Z normal)
+	// Bottom face (z=z1, inward normal = +Z)
 	FString BottomPlane = FString::Printf(TEXT("(%g %g %g) (%g %g %g) (%g %g %g)"),
-		x1, y2, z1,  x2, y2, z1,  x2, y1, z1);
+		x1, y1, z1,  x2, y1, z1,  x2, y2, z1);
 	GetDefaultUVAxes(FVector(0, 0, -1), UAxis, VAxis);
 	Solid.Children.Add(BuildSide(SideIdCounter++, BottomPlane, Material, UAxis, VAxis));
 
-	// Front face (+Y normal)
+	// Front face (y=y2, inward normal = -Y)
 	FString FrontPlane = FString::Printf(TEXT("(%g %g %g) (%g %g %g) (%g %g %g)"),
-		x1, y2, z2,  x2, y2, z2,  x2, y2, z1);
+		x2, y2, z2,  x1, y2, z2,  x1, y2, z1);
 	GetDefaultUVAxes(FVector(0, 1, 0), UAxis, VAxis);
 	Solid.Children.Add(BuildSide(SideIdCounter++, FrontPlane, Material, UAxis, VAxis));
 
-	// Back face (-Y normal)
+	// Back face (y=y1, inward normal = +Y)
 	FString BackPlane = FString::Printf(TEXT("(%g %g %g) (%g %g %g) (%g %g %g)"),
-		x1, y1, z1,  x2, y1, z1,  x2, y1, z2);
+		x2, y1, z1,  x1, y1, z1,  x1, y1, z2);
 	GetDefaultUVAxes(FVector(0, -1, 0), UAxis, VAxis);
 	Solid.Children.Add(BuildSide(SideIdCounter++, BackPlane, Material, UAxis, VAxis));
 
-	// Right face (+X normal)
+	// Right face (x=x2, inward normal = -X)
 	FString RightPlane = FString::Printf(TEXT("(%g %g %g) (%g %g %g) (%g %g %g)"),
-		x2, y1, z1,  x2, y2, z1,  x2, y2, z2);
+		x2, y2, z1,  x2, y1, z1,  x2, y1, z2);
 	GetDefaultUVAxes(FVector(1, 0, 0), UAxis, VAxis);
 	Solid.Children.Add(BuildSide(SideIdCounter++, RightPlane, Material, UAxis, VAxis));
 
-	// Left face (-X normal)
+	// Left face (x=x1, inward normal = +X)
 	FString LeftPlane = FString::Printf(TEXT("(%g %g %g) (%g %g %g) (%g %g %g)"),
-		x1, y1, z2,  x1, y2, z2,  x1, y2, z1);
+		x1, y2, z2,  x1, y1, z2,  x1, y1, z1);
 	GetDefaultUVAxes(FVector(-1, 0, 0), UAxis, VAxis);
 	Solid.Children.Add(BuildSide(SideIdCounter++, LeftPlane, Material, UAxis, VAxis));
 

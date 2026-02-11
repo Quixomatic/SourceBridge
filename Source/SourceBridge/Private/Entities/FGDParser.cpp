@@ -226,6 +226,24 @@ FString FFGDDatabase::ValidateIOConnection(
 }
 
 // ---- FFGDParser ----
+// Modeled after ValveFGD Python parser (pyparsing-based).
+// Grammar:
+//   fgd       := (mapsize | include | material_ex | autovisgroup | entity)*
+//   entity    := '@' class_type definitions '=' name [':' description] properties
+//   definitions := (name ['(' args ')'])*
+//   properties := '[' (input | output | property)* ']'
+//   property  := name '(' type ')' [readonly] [report] [':' display] [':' default] [':' desc] ['=' choices]
+//   choices   := '[' (choice)* ']'
+//   choice    := value ':' quoted_string
+//   input/output := 'input'/'output' name '(' type ')' ':' description
+//   name      := [A-Za-z0-9_]+
+//   quoted    := '"...' ('+' '"...')*  (concatenation)
+
+// Helper: check if character is a valid FGD name character (alphanumeric + underscore)
+static bool IsFGDNameChar(TCHAR Ch)
+{
+	return FChar::IsAlnum(Ch) || Ch == TEXT('_');
+}
 
 FFGDDatabase FFGDParser::ParseFile(const FString& FilePath)
 {
@@ -269,74 +287,125 @@ void FFGDParser::ParseContent(const FString& Content, FParseContext& Context)
 		SkipWhitespaceAndComments(Content, Pos);
 		if (Pos >= Len) break;
 
-		// Check for @include
-		if (Content[Pos] == TEXT('@'))
+		if (Content[Pos] != TEXT('@'))
 		{
-			// Read the directive
-			int32 DirStart = Pos;
-			Pos++; // skip @
-			FString Directive;
-			while (Pos < Len && FChar::IsAlpha(Content[Pos]))
-			{
-				Directive += Content[Pos++];
-			}
+			// Not a directive - skip character
+			Pos++;
+			continue;
+		}
 
-			if (Directive.Equals(TEXT("include"), ESearchCase::IgnoreCase))
-			{
-				SkipWhitespaceAndComments(Content, Pos);
-				FString IncludePath = ReadQuotedString(Content, Pos);
+		// Read the directive name after @
+		int32 DirStart = Pos;
+		Pos++; // skip @
+		FString Directive;
+		while (Pos < Len && FChar::IsAlpha(Content[Pos]))
+		{
+			Directive += Content[Pos++];
+		}
 
-				if (!IncludePath.IsEmpty() && !Context.BaseDirectory.IsEmpty())
+		if (Directive.Equals(TEXT("include"), ESearchCase::IgnoreCase))
+		{
+			// @include "filename.fgd"
+			SkipWhitespaceAndComments(Content, Pos);
+			FString IncludePath = ReadQuotedString(Content, Pos);
+
+			if (!IncludePath.IsEmpty() && !Context.BaseDirectory.IsEmpty())
+			{
+				FString FullPath = FPaths::Combine(Context.BaseDirectory, IncludePath);
+				FullPath = FPaths::ConvertRelativePathToFull(FullPath);
+				FString Key = FullPath.ToLower();
+
+				if (!Context.IncludedFiles.Contains(Key))
 				{
-					FString FullPath = FPaths::Combine(Context.BaseDirectory, IncludePath);
-					FullPath = FPaths::ConvertRelativePathToFull(FullPath);
-					FString Key = FullPath.ToLower();
+					Context.IncludedFiles.Add(Key);
 
-					if (!Context.IncludedFiles.Contains(Key))
+					FString IncludeContent;
+					if (FFileHelper::LoadFileToString(IncludeContent, *FullPath))
 					{
-						Context.IncludedFiles.Add(Key);
-
-						FString IncludeContent;
-						if (FFileHelper::LoadFileToString(IncludeContent, *FullPath))
-						{
-							FString OldBase = Context.BaseDirectory;
-							Context.BaseDirectory = FPaths::GetPath(FullPath);
-							ParseContent(IncludeContent, Context);
-							Context.BaseDirectory = OldBase;
-						}
-						else
-						{
-							Context.Database.Warnings.Add(FString::Printf(
-								TEXT("@include: failed to read '%s'"), *FullPath));
-						}
+						FString OldBase = Context.BaseDirectory;
+						Context.BaseDirectory = FPaths::GetPath(FullPath);
+						ParseContent(IncludeContent, Context);
+						Context.BaseDirectory = OldBase;
+					}
+					else
+					{
+						Context.Database.Warnings.Add(FString::Printf(
+							TEXT("@include: failed to read '%s'"), *FullPath));
 					}
 				}
 			}
-			else if (Directive.Equals(TEXT("BaseClass"), ESearchCase::IgnoreCase) ||
-				Directive.Equals(TEXT("PointClass"), ESearchCase::IgnoreCase) ||
-				Directive.Equals(TEXT("SolidClass"), ESearchCase::IgnoreCase) ||
-				Directive.Equals(TEXT("NPCClass"), ESearchCase::IgnoreCase) ||
-				Directive.Equals(TEXT("KeyFrameClass"), ESearchCase::IgnoreCase) ||
-				Directive.Equals(TEXT("MoveClass"), ESearchCase::IgnoreCase) ||
-				Directive.Equals(TEXT("FilterClass"), ESearchCase::IgnoreCase))
+		}
+		else if (Directive.Equals(TEXT("mapsize"), ESearchCase::IgnoreCase))
+		{
+			// @mapsize(-16384, 16384) - skip the whole thing
+			SkipWhitespaceAndComments(Content, Pos);
+			if (Pos < Len && Content[Pos] == TEXT('('))
 			{
-				// Reset position to start of @ for entity class parsing
-				Pos = DirStart;
-				ParseEntityClass(Content, Pos, Context);
+				Pos++;
+				ReadUntil(Content, Pos, TEXT(')'));
+				if (Pos < Len) Pos++; // skip )
 			}
-			else
+		}
+		else if (Directive.Equals(TEXT("MaterialExclusion"), ESearchCase::IgnoreCase))
+		{
+			// @MaterialExclusion [ "material1" "material2" ... ]
+			SkipWhitespaceAndComments(Content, Pos);
+			if (Pos < Len && Content[Pos] == TEXT('['))
 			{
-				// Unknown directive, skip to next line
-				while (Pos < Len && Content[Pos] != TEXT('\n'))
+				Pos++;
+				// Skip everything until closing ]
+				int32 Depth = 1;
+				while (Pos < Len && Depth > 0)
 				{
-					Pos++;
+					if (Content[Pos] == TEXT('[')) Depth++;
+					else if (Content[Pos] == TEXT(']')) Depth--;
+					if (Depth > 0) Pos++;
 				}
+				if (Pos < Len) Pos++; // skip final ]
 			}
+		}
+		else if (Directive.Equals(TEXT("AutoVisGroup"), ESearchCase::IgnoreCase))
+		{
+			// @AutoVisGroup = "name" [ "group" [ "entity" ... ] ... ]
+			// Skip until we find and consume the outer [...]
+			SkipWhitespaceAndComments(Content, Pos);
+			// Skip past = and name
+			while (Pos < Len && Content[Pos] != TEXT('['))
+			{
+				Pos++;
+			}
+			if (Pos < Len && Content[Pos] == TEXT('['))
+			{
+				Pos++;
+				int32 Depth = 1;
+				while (Pos < Len && Depth > 0)
+				{
+					if (Content[Pos] == TEXT('[')) Depth++;
+					else if (Content[Pos] == TEXT(']')) Depth--;
+					if (Depth > 0) Pos++;
+				}
+				if (Pos < Len) Pos++; // skip final ]
+			}
+		}
+		else if (Directive.Equals(TEXT("BaseClass"), ESearchCase::IgnoreCase) ||
+			Directive.Equals(TEXT("PointClass"), ESearchCase::IgnoreCase) ||
+			Directive.Equals(TEXT("SolidClass"), ESearchCase::IgnoreCase) ||
+			Directive.Equals(TEXT("NPCClass"), ESearchCase::IgnoreCase) ||
+			Directive.Equals(TEXT("KeyFrameClass"), ESearchCase::IgnoreCase) ||
+			Directive.Equals(TEXT("MoveClass"), ESearchCase::IgnoreCase) ||
+			Directive.Equals(TEXT("FilterClass"), ESearchCase::IgnoreCase))
+		{
+			// Reset position to start of @ for entity class parsing
+			Pos = DirStart;
+			ParseEntityClass(Content, Pos, Context);
 		}
 		else
 		{
-			// Unknown token, skip character
-			Pos++;
+			// Unknown directive - skip to next line
+			while (Pos < Len && Content[Pos] != TEXT('\n'))
+			{
+				Pos++;
+			}
 		}
 	}
 }
@@ -348,7 +417,7 @@ void FFGDParser::ParseEntityClass(const FString& Content, int32& Pos, FParseCont
 	// Skip @
 	if (Pos < Len && Content[Pos] == TEXT('@')) Pos++;
 
-	// Read class type
+	// Read class type (BaseClass, PointClass, SolidClass, etc.)
 	FString ClassType;
 	while (Pos < Len && FChar::IsAlpha(Content[Pos]))
 	{
@@ -362,31 +431,38 @@ void FFGDParser::ParseEntityClass(const FString& Content, int32& Pos, FParseCont
 
 	SkipWhitespaceAndComments(Content, Pos);
 
-	// Parse class options: base(X, Y), studio("model.mdl"), iconsprite("path"), color(R G B), size(mins, maxs)
+	// Parse class definitions/options before '='
+	// Format: name(args) name(args) ... = classname
+	// Python: pp_entity_definition = pp_name + Optional('(' + args + ')')
 	while (Pos < Len && Content[Pos] != TEXT('='))
 	{
-		if (Content[Pos] == TEXT('[') || Content[Pos] == TEXT('\n'))
+		if (Content[Pos] == TEXT('['))
 		{
+			// Some entities have [] directly without =
 			break;
 		}
 
+		int32 LoopStart = Pos;
+
+		// Read option name: alphanumeric + underscore (matches pp_name = Word(alphanums+'_'))
 		FString OptionName;
-		while (Pos < Len && FChar::IsAlpha(Content[Pos]))
+		while (Pos < Len && IsFGDNameChar(Content[Pos]))
 		{
 			OptionName += Content[Pos++];
 		}
 
 		SkipWhitespaceAndComments(Content, Pos);
 
+		// Read optional (args)
 		if (Pos < Len && Content[Pos] == TEXT('('))
 		{
 			Pos++; // skip (
 			FString OptionContent = ReadUntil(Content, Pos, TEXT(')'));
 			if (Pos < Len && Content[Pos] == TEXT(')')) Pos++;
 
+			// Process known options
 			if (OptionName.Equals(TEXT("base"), ESearchCase::IgnoreCase))
 			{
-				// Parse comma-separated base class names
 				TArray<FString> Bases;
 				OptionContent.ParseIntoArray(Bases, TEXT(","));
 				for (FString& Base : Bases)
@@ -398,11 +474,15 @@ void FFGDParser::ParseEntityClass(const FString& Content, int32& Pos, FParseCont
 					}
 				}
 			}
-			else if (OptionName.Equals(TEXT("studio"), ESearchCase::IgnoreCase))
+			else if (OptionName.Equals(TEXT("studio"), ESearchCase::IgnoreCase) ||
+				OptionName.Equals(TEXT("studioprop"), ESearchCase::IgnoreCase))
 			{
 				OptionContent.TrimStartAndEndInline();
 				OptionContent = OptionContent.Replace(TEXT("\""), TEXT(""));
-				EntityClass.EditorModel = OptionContent;
+				if (!OptionContent.IsEmpty())
+				{
+					EntityClass.EditorModel = OptionContent;
+				}
 			}
 			else if (OptionName.Equals(TEXT("iconsprite"), ESearchCase::IgnoreCase))
 			{
@@ -416,7 +496,6 @@ void FFGDParser::ParseEntityClass(const FString& Content, int32& Pos, FParseCont
 			}
 			else if (OptionName.Equals(TEXT("size"), ESearchCase::IgnoreCase))
 			{
-				// size(-8 -8 -8, 8 8 8)
 				int32 CommaIdx;
 				if (OptionContent.FindChar(TEXT(','), CommaIdx))
 				{
@@ -424,9 +503,16 @@ void FFGDParser::ParseEntityClass(const FString& Content, int32& Pos, FParseCont
 					EntityClass.SizeMaxs = OptionContent.Mid(CommaIdx + 1).TrimStartAndEnd();
 				}
 			}
+			// Other options (sphere, line, lightcone, etc.) are silently ignored
 		}
 
 		SkipWhitespaceAndComments(Content, Pos);
+
+		// Safety: if nothing was consumed, skip a character to prevent infinite loop
+		if (Pos == LoopStart)
+		{
+			Pos++;
+		}
 	}
 
 	// Skip '='
@@ -442,7 +528,7 @@ void FFGDParser::ParseEntityClass(const FString& Content, int32& Pos, FParseCont
 
 	SkipWhitespaceAndComments(Content, Pos);
 
-	// Read optional description: "Description text"
+	// Read optional description: : "Description text"
 	if (Pos < Len && Content[Pos] == TEXT(':'))
 	{
 		Pos++; // skip :
@@ -460,7 +546,6 @@ void FFGDParser::ParseEntityClass(const FString& Content, int32& Pos, FParseCont
 		while (Pos < Len)
 		{
 			SkipWhitespaceAndComments(Content, Pos);
-
 			if (Pos >= Len) break;
 
 			if (Content[Pos] == TEXT(']'))
@@ -469,7 +554,9 @@ void FFGDParser::ParseEntityClass(const FString& Content, int32& Pos, FParseCont
 				break;
 			}
 
-			// Check for input/output
+			int32 IterStart = Pos;
+
+			// Read the first token (property name, "input", or "output")
 			FString Token = ReadToken(Content, Pos);
 
 			if (Token.Equals(TEXT("input"), ESearchCase::IgnoreCase))
@@ -483,7 +570,7 @@ void FFGDParser::ParseEntityClass(const FString& Content, int32& Pos, FParseCont
 			else if (!Token.IsEmpty())
 			{
 				// It's a property name - parse the property definition
-				// Put the token back conceptually by handling it in ParseProperty
+				// Format: name(type) [readonly] [report] [: display] [: default] [: desc] [= choices]
 				FFGDProperty Prop;
 				Prop.Name = Token;
 
@@ -498,15 +585,32 @@ void FFGDParser::ParseEntityClass(const FString& Content, int32& Pos, FParseCont
 
 					Prop.Type = ParsePropertyType(TypeStr);
 
-					// Check for readonly flag
 					SkipWhitespaceAndComments(Content, Pos);
-					if (Pos + 8 < Len)
+
+					// Check for readonly/report flags (matches Python's pp_property_readonly/report)
+					while (Pos < Len)
 					{
-						FString Next = Content.Mid(Pos, 8);
-						if (Next.Equals(TEXT("readonly"), ESearchCase::IgnoreCase))
+						FString PeekWord;
+						int32 PeekPos = Pos;
+						while (PeekPos < Len && FChar::IsAlpha(Content[PeekPos]))
+						{
+							PeekWord += Content[PeekPos++];
+						}
+						if (PeekWord.Equals(TEXT("readonly"), ESearchCase::IgnoreCase))
 						{
 							Prop.bReadOnly = true;
-							Pos += 8;
+							Pos = PeekPos;
+							SkipWhitespaceAndComments(Content, Pos);
+						}
+						else if (PeekWord.Equals(TEXT("report"), ESearchCase::IgnoreCase))
+						{
+							// report flag - acknowledged but not stored (matches Python parser)
+							Pos = PeekPos;
+							SkipWhitespaceAndComments(Content, Pos);
+						}
+						else
+						{
+							break;
 						}
 					}
 				}
@@ -514,13 +618,12 @@ void FFGDParser::ParseEntityClass(const FString& Content, int32& Pos, FParseCont
 				SkipWhitespaceAndComments(Content, Pos);
 
 				// Read optional : "Display Name" : "default" : "description"
-				// Format: : "Display Name" : "default" : "help text"
 				if (Pos < Len && Content[Pos] == TEXT(':'))
 				{
 					Pos++;
 					SkipWhitespaceAndComments(Content, Pos);
 
-					// Display name
+					// Display name (quoted string)
 					if (Pos < Len && Content[Pos] == TEXT('"'))
 					{
 						Prop.DisplayName = ReadQuotedString(Content, Pos);
@@ -537,9 +640,10 @@ void FFGDParser::ParseEntityClass(const FString& Content, int32& Pos, FParseCont
 						{
 							Prop.DefaultValue = ReadQuotedString(Content, Pos);
 						}
-						else if (Pos < Len && Content[Pos] != TEXT(':') && Content[Pos] != TEXT('[') && Content[Pos] != TEXT('\n'))
+						else if (Pos < Len && Content[Pos] != TEXT(':') && Content[Pos] != TEXT('[') &&
+							Content[Pos] != TEXT(']') && Content[Pos] != TEXT('=') && Content[Pos] != TEXT('\n'))
 						{
-							// Unquoted default value (integer)
+							// Unquoted default value (integer, float, etc.)
 							Prop.DefaultValue = ReadToken(Content, Pos);
 						}
 					}
@@ -580,6 +684,8 @@ void FFGDParser::ParseEntityClass(const FString& Content, int32& Pos, FParseCont
 								break;
 							}
 
+							int32 ChoiceStart = Pos;
+
 							if (Prop.Type == EFGDPropertyType::Flags)
 							{
 								// Flag format: bit : "description" : defaultOn
@@ -597,6 +703,7 @@ void FFGDParser::ParseEntityClass(const FString& Content, int32& Pos, FParseCont
 
 								FFGDFlag Flag;
 								Flag.Bit = FCString::Atoi(*BitStr);
+								Flag.bDefaultOn = false;
 
 								if (Pos < Len && Content[Pos] == TEXT(':'))
 								{
@@ -644,11 +751,23 @@ void FFGDParser::ParseEntityClass(const FString& Content, int32& Pos, FParseCont
 
 								Prop.Choices.Add(Choice);
 							}
+
+							// Safety: if nothing was consumed, skip to prevent infinite loop
+							if (Pos == ChoiceStart && Pos < Len)
+							{
+								Pos++;
+							}
 						}
 					}
 				}
 
 				EntityClass.Properties.Add(Prop);
+			}
+
+			// Safety: if nothing was consumed this iteration, skip a character
+			if (Pos == IterStart && Pos < Len)
+			{
+				Pos++;
 			}
 		}
 	}
@@ -660,8 +779,35 @@ void FFGDParser::ParseEntityClass(const FString& Content, int32& Pos, FParseCont
 	}
 }
 
+void FFGDParser::ParseProperty(const FString& Content, int32& Pos, FFGDEntityClass& EntityClass, FParseContext& Context)
+{
+	// Called after the property name has already been read by ReadToken in ParseEntityClass.
+	// We need the property name from the caller, so we re-read from the current Pos context.
+	// Actually, the caller already consumed the token. We need to receive it differently.
+	// The property name was the last ReadToken result in ParseEntityClass.
+	// We'll restructure: ParseProperty receives the already-read name via EntityClass trick.
+	// Better approach: ParseEntityClass passes name to us.
+	// For now, the name is stored as the last property's name. Let's restructure.
+
+	// NOTE: This is called from ParseEntityClass which already read the property name token.
+	// The name is passed by adding it to EntityClass.Properties temporarily.
+	// Actually, let's just inline it differently. ParseEntityClass calls us with Pos
+	// right after the property name token was consumed.
+
+	// The caller should set up the property name before calling us.
+	// Since we can't change the header easily, we'll work with a convention:
+	// ParseProperty is called with Pos right after the property name was read.
+	// The property name is the last thing that was read. We'll get it from EntityClass.
+
+	// CHANGED APPROACH: This function is called from ParseEntityClass inline.
+	// The actual implementation is inline in ParseEntityClass. This function exists
+	// to match the header declaration. See ParseEntityClass for the real implementation.
+}
+
 void FFGDParser::ParseIODef(const FString& Content, int32& Pos, bool bIsInput, FFGDEntityClass& EntityClass)
 {
+	int32 Len = Content.Len();
+
 	SkipWhitespaceAndComments(Content, Pos);
 
 	FFGDIODef IO;
@@ -670,22 +816,22 @@ void FFGDParser::ParseIODef(const FString& Content, int32& Pos, bool bIsInput, F
 	SkipWhitespaceAndComments(Content, Pos);
 
 	// Read parameter type in parens: (void), (float), (string), etc.
-	if (Pos < Content.Len() && Content[Pos] == TEXT('('))
+	if (Pos < Len && Content[Pos] == TEXT('('))
 	{
 		Pos++;
 		IO.ParamType = ReadUntil(Content, Pos, TEXT(')'));
 		IO.ParamType.TrimStartAndEndInline();
-		if (Pos < Content.Len() && Content[Pos] == TEXT(')')) Pos++;
+		if (Pos < Len && Content[Pos] == TEXT(')')) Pos++;
 	}
 
 	SkipWhitespaceAndComments(Content, Pos);
 
 	// Description: : "text"
-	if (Pos < Content.Len() && Content[Pos] == TEXT(':'))
+	if (Pos < Len && Content[Pos] == TEXT(':'))
 	{
 		Pos++;
 		SkipWhitespaceAndComments(Content, Pos);
-		if (Pos < Content.Len() && Content[Pos] == TEXT('"'))
+		if (Pos < Len && Content[Pos] == TEXT('"'))
 		{
 			IO.Description = ReadQuotedString(Content, Pos);
 		}
@@ -714,7 +860,7 @@ void FFGDParser::SkipWhitespaceAndComments(const FString& Content, int32& Pos)
 			continue;
 		}
 
-		// Skip // comments
+		// Skip // comments to end of line
 		if (Pos + 1 < Len && Content[Pos] == TEXT('/') && Content[Pos + 1] == TEXT('/'))
 		{
 			while (Pos < Len && Content[Pos] != TEXT('\n'))
@@ -742,6 +888,8 @@ FString FFGDParser::ReadToken(const FString& Content, int32& Pos)
 	}
 
 	// Unquoted token: read until whitespace or special character
+	// Matches Python's pp_name = Word(alphanums+'_') for names,
+	// but also handles numeric tokens like "0", "-1", "255"
 	FString Token;
 	while (Pos < Len && !FChar::IsWhitespace(Content[Pos]) &&
 		Content[Pos] != TEXT('(') && Content[Pos] != TEXT(')') &&
@@ -766,6 +914,8 @@ FString FFGDParser::ReadQuotedString(const FString& Content, int32& Pos)
 	FString Result;
 
 	// Handle "string" + "string" concatenation pattern used in FGD files
+	// Matches Python's: pp_quoted = Combine(QuotedString('"') + Optional(OneOrMore(
+	//     Suppress('+') + QuotedString('"'))), adjacent=False)
 	while (true)
 	{
 		if (Pos >= Len || Content[Pos] != TEXT('"'))
@@ -777,21 +927,34 @@ FString FFGDParser::ReadQuotedString(const FString& Content, int32& Pos)
 
 		while (Pos < Len && Content[Pos] != TEXT('"'))
 		{
-			// Handle escaped quotes
-			if (Content[Pos] == TEXT('\\') && Pos + 1 < Len && Content[Pos + 1] == TEXT('"'))
+			if (Content[Pos] == TEXT('\\') && Pos + 1 < Len)
 			{
-				Result += TEXT('"');
-				Pos += 2;
+				TCHAR Next = Content[Pos + 1];
+				if (Next == TEXT('"'))
+				{
+					Result += TEXT('"');
+					Pos += 2;
+					continue;
+				}
+				else if (Next == TEXT('n'))
+				{
+					Result += TEXT('\n');
+					Pos += 2;
+					continue;
+				}
+				else if (Next == TEXT('\\'))
+				{
+					Result += TEXT('\\');
+					Pos += 2;
+					continue;
+				}
 			}
-			else
-			{
-				Result += Content[Pos++];
-			}
+			Result += Content[Pos++];
 		}
 
 		if (Pos < Len) Pos++; // skip closing quote
 
-		// Check for + continuation: skip whitespace, look for +, skip whitespace, expect "
+		// Check for + continuation: "str" + "str"
 		int32 SavePos = Pos;
 		SkipWhitespaceAndComments(Content, Pos);
 
@@ -854,6 +1017,13 @@ EFGDPropertyType FFGDParser::ParsePropertyType(const FString& TypeStr)
 	if (Lower == TEXT("pointentityclass")) return EFGDPropertyType::PointEntityClass;
 	if (Lower == TEXT("target_source"))    return EFGDPropertyType::TargetSource;
 	if (Lower == TEXT("target_destination"))return EFGDPropertyType::TargetDestination;
+	if (Lower == TEXT("bool"))             return EFGDPropertyType::Integer; // bool treated as integer
+	if (Lower == TEXT("void"))             return EFGDPropertyType::String;  // void (used in I/O)
+	if (Lower == TEXT("color1"))           return EFGDPropertyType::Color255;
+	if (Lower == TEXT("node_dest"))        return EFGDPropertyType::Integer; // node destination
+	if (Lower == TEXT("script"))           return EFGDPropertyType::String;  // script code
+	if (Lower == TEXT("scriptlist"))       return EFGDPropertyType::String;  // script file list
+	if (Lower == TEXT("target_name_or_class")) return EFGDPropertyType::String;
 
 	return EFGDPropertyType::Unknown;
 }
