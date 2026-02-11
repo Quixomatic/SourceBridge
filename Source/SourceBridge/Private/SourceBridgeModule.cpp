@@ -5,6 +5,7 @@
 #include "Models/QCWriter.h"
 #include "Pipeline/FullExportPipeline.h"
 #include "Validation/ExportValidator.h"
+#include "UI/SourceBridgeToolbar.h"
 #include "HAL/PlatformFilemanager.h"
 #include "Misc/FileHelper.h"
 #include "Engine/World.h"
@@ -16,6 +17,9 @@
 
 void FSourceBridgeModule::StartupModule()
 {
+	// Register toolbar UI
+	FSourceBridgeToolbar::Register();
+
 	ExportTestBoxRoomCommand = MakeShared<FAutoConsoleCommand>(
 		TEXT("SourceBridge.ExportTestBoxRoom"),
 		TEXT("Export a test box room to VMF. Usage: SourceBridge.ExportTestBoxRoom <filepath>"),
@@ -281,6 +285,8 @@ void FSourceBridgeModule::StartupModule()
 
 void FSourceBridgeModule::ShutdownModule()
 {
+	FSourceBridgeToolbar::Unregister();
+
 	ExportTestBoxRoomCommand.Reset();
 	ExportSceneCommand.Reset();
 	CompileMapCommand.Reset();
