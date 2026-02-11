@@ -142,6 +142,19 @@ FEntityExportResult FEntityExporter::ExportEntities(UWorld* World)
 				}
 				Entity.AddKeyValue(TEXT("radius"), SoundActor->Radius);
 			}
+			else if (ASourceGoalTrigger* GoalActor = Cast<ASourceGoalTrigger>(SourceActor))
+			{
+				Entity.AddKeyValue(TEXT("wait"), GoalActor->WaitTime);
+				Entity.AddKeyValue(TEXT("TeamNum"), GoalActor->TeamNumber);
+				if (SourceActor->SpawnFlags == 0)
+				{
+					Entity.AddKeyValue(TEXT("spawnflags"), 1); // Clients only
+				}
+			}
+			else if (ASourceSpectatorCamera* CamActor = Cast<ASourceSpectatorCamera>(SourceActor))
+			{
+				Entity.AddKeyValue(TEXT("fov"), CamActor->FOV);
+			}
 
 			// Parse any additional actor tags
 			ParseActorTags(SourceActor, Entity);

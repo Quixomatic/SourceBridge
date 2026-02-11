@@ -73,3 +73,31 @@ ASourceSoundscape::ASourceSoundscape()
 {
 	SourceClassname = TEXT("env_soundscape");
 }
+
+// ---- Spectator Spawn ----
+
+ASourceSpectatorSpawn::ASourceSpectatorSpawn()
+{
+	SourceClassname = TEXT("info_player_spectator");
+}
+
+// ---- Goal Trigger (Soccer) ----
+
+ASourceGoalTrigger::ASourceGoalTrigger()
+{
+	SourceClassname = TEXT("trigger_multiple");
+}
+
+// ---- Ball Spawn (Soccer) ----
+
+ASourceBallSpawn::ASourceBallSpawn()
+{
+	SourceClassname = TEXT("info_target");
+}
+
+// ---- Spectator Camera ----
+
+ASourceSpectatorCamera::ASourceSpectatorCamera()
+{
+	SourceClassname = TEXT("point_viewcontrol");
+}

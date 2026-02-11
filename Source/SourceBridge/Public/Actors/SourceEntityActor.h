@@ -183,3 +183,66 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Source Soundscape")
 	float Radius = 128.0f;
 };
+
+/**
+ * Spectator spawn point. Exports as info_player_spectator.
+ */
+UCLASS(Blueprintable, ClassGroup = "SourceBridge", meta = (DisplayName = "Source Spectator Spawn"))
+class SOURCEBRIDGE_API ASourceSpectatorSpawn : public ASourceEntityActor
+{
+	GENERATED_BODY()
+
+public:
+	ASourceSpectatorSpawn();
+};
+
+/**
+ * Soccer goal trigger volume. Exports as trigger_multiple with team-specific I/O.
+ * Used for goal detection in soccer game modes.
+ */
+UCLASS(Blueprintable, ClassGroup = "SourceBridge", meta = (DisplayName = "Source Goal Trigger"))
+class SOURCEBRIDGE_API ASourceGoalTrigger : public ASourceEntityActor
+{
+	GENERATED_BODY()
+
+public:
+	ASourceGoalTrigger();
+
+	/** Which team's goal this is (the ball entering scores for the other team). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Source Soccer")
+	int32 TeamNumber = 0;
+
+	/** Wait time between trigger activations (seconds). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Source Soccer")
+	float WaitTime = 3.0f;
+};
+
+/**
+ * Ball spawn point. Exports as a point entity for ball spawn location.
+ * Used in soccer game modes for initial/respawn ball placement.
+ */
+UCLASS(Blueprintable, ClassGroup = "SourceBridge", meta = (DisplayName = "Source Ball Spawn"))
+class SOURCEBRIDGE_API ASourceBallSpawn : public ASourceEntityActor
+{
+	GENERATED_BODY()
+
+public:
+	ASourceBallSpawn();
+};
+
+/**
+ * Spectator camera (point_viewcontrol). Exports as a camera entity.
+ * Used for spectator camera positions (e.g., overhead view of field).
+ */
+UCLASS(Blueprintable, ClassGroup = "SourceBridge", meta = (DisplayName = "Source Spectator Camera"))
+class SOURCEBRIDGE_API ASourceSpectatorCamera : public ASourceEntityActor
+{
+	GENERATED_BODY()
+
+public:
+	ASourceSpectatorCamera();
+
+	/** Field of view. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Source Camera", meta = (ClampMin = 10, ClampMax = 170))
+	float FOV = 90.0f;
+};
