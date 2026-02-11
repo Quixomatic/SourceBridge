@@ -15,6 +15,9 @@ public:
 	/** Load a VTF file from disk and create a transient UTexture2D. Returns null on failure. */
 	static UTexture2D* LoadVTF(const FString& FilePath);
 
+	/** Load a VTF from raw bytes in memory. DebugName is used for log messages only. */
+	static UTexture2D* LoadVTFFromMemory(const TArray<uint8>& FileData, const FString& DebugName);
+
 private:
 	// VTF image format IDs (from VTF spec)
 	enum EVTFFormat : uint32

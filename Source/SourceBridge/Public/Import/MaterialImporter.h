@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Import/VPKReader.h"
 
 class UMaterial;
 class UMaterialInterface;
@@ -125,8 +126,17 @@ private:
 	/** Find and load a VTF texture from all search paths. */
 	static UTexture2D* FindAndLoadVTF(const FString& TexturePath);
 
+	/** Try to find and parse a VMT from VPK archives. Returns empty string if not found. */
+	static FString FindVMTInVPK(const FString& SourceMaterialPath);
+
+	/** Try to load a VTF from VPK archives. Returns null if not found. */
+	static UTexture2D* FindAndLoadVTFFromVPK(const FString& TexturePath);
+
 	/** Initialize reverse mappings if not already done. */
 	static void EnsureReverseToolMappings();
+
+	/** Opened VPK archives for game material access. */
+	static TArray<TSharedPtr<FVPKReader>> VPKArchives;
 
 	/** Shared base materials (created once, reused for all MIDs). */
 	static UMaterial* TextureBaseMaterial;

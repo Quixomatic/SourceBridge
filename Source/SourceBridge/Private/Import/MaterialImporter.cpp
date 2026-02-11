@@ -1,5 +1,6 @@
 #include "Import/MaterialImporter.h"
 #include "Import/VTFReader.h"
+#include "Import/VPKReader.h"
 #include "Compile/CompilePipeline.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInterface.h"
@@ -18,6 +19,7 @@ TMap<FString, FString> FMaterialImporter::ReverseToolMappings;
 TMap<FString, FMaterialImporter::FTextureCacheEntry> FMaterialImporter::TextureInfoCache;
 FString FMaterialImporter::AssetSearchPath;
 TArray<FString> FMaterialImporter::AdditionalSearchPaths;
+TArray<TSharedPtr<FVPKReader>> FMaterialImporter::VPKArchives;
 UMaterial* FMaterialImporter::TextureBaseMaterial = nullptr;
 UMaterial* FMaterialImporter::MaskedBaseMaterial = nullptr;
 UMaterial* FMaterialImporter::ColorBaseMaterial = nullptr;
@@ -209,7 +211,24 @@ void FMaterialImporter::SetupGameSearchPaths(const FString& GameName)
 		UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Added download materials path: %s"), *DownloadDir);
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: %d additional search paths configured"), AdditionalSearchPaths.Num());
+	// 4. Open VPK archives for stock game materials
+	VPKArchives.Empty();
+	TArray<FString> VPKDirFiles;
+	IFileManager::Get().FindFiles(VPKDirFiles, *(GameDir / TEXT("*_dir.vpk")), true, false);
+	for (const FString& VPKFile : VPKDirFiles)
+	{
+		FString FullPath = GameDir / VPKFile;
+		TSharedPtr<FVPKReader> Reader = MakeShared<FVPKReader>();
+		if (Reader->Open(FullPath))
+		{
+			UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Opened VPK: %s (%d entries)"),
+				*VPKFile, Reader->GetEntryCount());
+			VPKArchives.Add(Reader);
+		}
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: %d additional search paths + %d VPK archives configured"),
+		AdditionalSearchPaths.Num(), VPKArchives.Num());
 }
 
 // ---- Material Resolution ----
@@ -250,8 +269,8 @@ UMaterialInterface* FMaterialImporter::ResolveSourceMaterial(const FString& Sour
 
 	UMaterialInterface* Material = nullptr;
 
-	// 1. Try to create from extracted VMT file
-	if (!AssetSearchPath.IsEmpty())
+	// 1. Try to create from extracted VMT file or VPK archives
+	if (!AssetSearchPath.IsEmpty() || AdditionalSearchPaths.Num() > 0 || VPKArchives.Num() > 0)
 	{
 		Material = CreateMaterialFromVMT(SourceMaterialPath);
 	}
@@ -382,21 +401,31 @@ UMaterialInterface* FMaterialImporter::CreateMaterialFromVMT(const FString& Sour
 		if (!VMTFullPath.IsEmpty()) break;
 	}
 
+	// If not found on disk, try VPK archives
+	FVMTParsedMaterial VMTData;
 	if (VMTFullPath.IsEmpty())
 	{
-		return nullptr;
+		FString VMTContent = FindVMTInVPK(SourceMaterialPath);
+		if (VMTContent.IsEmpty())
+		{
+			return nullptr;
+		}
+		VMTData = ParseVMT(VMTContent);
+	}
+	else
+	{
+		VMTData = ParseVMTFile(VMTFullPath);
 	}
 
-	// Parse the VMT
-	FVMTParsedMaterial VMTData = ParseVMTFile(VMTFullPath);
 	if (VMTData.ShaderName.IsEmpty())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("MaterialImporter: Failed to parse VMT: %s"), *VMTFullPath);
+		UE_LOG(LogTemp, Warning, TEXT("MaterialImporter: Failed to parse VMT for: %s"), *SourceMaterialPath);
 		return nullptr;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Parsed VMT '%s' - shader: %s, basetexture: %s"),
-		*SourceMaterialPath, *VMTData.ShaderName, *VMTData.GetBaseTexture());
+	FString VMTSource = VMTFullPath.IsEmpty() ? TEXT("VPK") : VMTFullPath;
+	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Parsed VMT '%s' (from %s) - shader: %s, basetexture: %s"),
+		*SourceMaterialPath, *VMTSource, *VMTData.ShaderName, *VMTData.GetBaseTexture());
 
 	// Determine if material needs alpha from VMT params
 	bool bNeedsAlpha = VMTData.IsTranslucent()
@@ -530,8 +559,15 @@ UTexture2D* FMaterialImporter::FindAndLoadVTF(const FString& TexturePath)
 		}
 	}
 
-	UE_LOG(LogTemp, Verbose, TEXT("MaterialImporter: VTF not found for '%s' (searched %d paths)"),
-		*TexturePath, SearchRoots.Num());
+	// Fallback: try VPK archives
+	UTexture2D* VPKTexture = FindAndLoadVTFFromVPK(TexturePath);
+	if (VPKTexture)
+	{
+		return VPKTexture;
+	}
+
+	UE_LOG(LogTemp, Verbose, TEXT("MaterialImporter: VTF not found for '%s' (searched %d paths + %d VPKs)"),
+		*TexturePath, SearchRoots.Num(), VPKArchives.Num());
 	return nullptr;
 }
 
@@ -649,11 +685,58 @@ UMaterialInstanceDynamic* FMaterialImporter::CreateColorMID(const FLinearColor& 
 	return MID;
 }
 
+FString FMaterialImporter::FindVMTInVPK(const FString& SourceMaterialPath)
+{
+	if (VPKArchives.Num() == 0) return FString();
+
+	// VPK paths are lowercase with forward slashes, no leading slash
+	FString VPKPath = (TEXT("materials/") + SourceMaterialPath + TEXT(".vmt")).ToLower();
+	VPKPath = VPKPath.Replace(TEXT("\\"), TEXT("/"));
+
+	for (const TSharedPtr<FVPKReader>& VPK : VPKArchives)
+	{
+		TArray<uint8> Data;
+		if (VPK->ReadFile(VPKPath, Data))
+		{
+			// Convert raw bytes to FString (VMT files are ASCII/UTF-8)
+			FString Content;
+			FFileHelper::BufferToString(Content, Data.GetData(), Data.Num());
+			UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Found VMT in VPK: %s"), *VPKPath);
+			return Content;
+		}
+	}
+
+	return FString();
+}
+
+UTexture2D* FMaterialImporter::FindAndLoadVTFFromVPK(const FString& TexturePath)
+{
+	if (VPKArchives.Num() == 0) return nullptr;
+
+	// VPK paths are lowercase with forward slashes
+	FString VPKPath = (TEXT("materials/") + TexturePath + TEXT(".vtf")).ToLower();
+	VPKPath = VPKPath.Replace(TEXT("\\"), TEXT("/"));
+
+	for (const TSharedPtr<FVPKReader>& VPK : VPKArchives)
+	{
+		TArray<uint8> Data;
+		if (VPK->ReadFile(VPKPath, Data))
+		{
+			UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Found VTF in VPK: %s (%d bytes)"),
+				*VPKPath, Data.Num());
+			return FVTFReader::LoadVTFFromMemory(Data, VPKPath);
+		}
+	}
+
+	return nullptr;
+}
+
 void FMaterialImporter::ClearCache()
 {
 	MaterialCache.Empty();
 	TextureInfoCache.Empty();
 	AdditionalSearchPaths.Empty();
+	VPKArchives.Empty();
 	TextureBaseMaterial = nullptr;
 	MaskedBaseMaterial = nullptr;
 	ColorBaseMaterial = nullptr;

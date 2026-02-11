@@ -138,9 +138,14 @@ UTexture2D* FVTFReader::LoadVTF(const FString& FilePath)
 		return nullptr;
 	}
 
+	return LoadVTFFromMemory(FileData, FilePath);
+}
+
+UTexture2D* FVTFReader::LoadVTFFromMemory(const TArray<uint8>& FileData, const FString& DebugName)
+{
 	if (FileData.Num() < (int32)sizeof(FVTFHeaderRaw))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("VTFReader: File too small: %s"), *FilePath);
+		UE_LOG(LogTemp, Warning, TEXT("VTFReader: Data too small: %s"), *DebugName);
 		return nullptr;
 	}
 
@@ -149,7 +154,7 @@ UTexture2D* FVTFReader::LoadVTF(const FString& FilePath)
 
 	if (FMemory::Memcmp(Header->Signature, "VTF", 3) != 0)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("VTFReader: Invalid VTF signature: %s"), *FilePath);
+		UE_LOG(LogTemp, Warning, TEXT("VTFReader: Invalid VTF signature: %s"), *DebugName);
 		return nullptr;
 	}
 
@@ -161,7 +166,7 @@ UTexture2D* FVTFReader::LoadVTF(const FString& FilePath)
 
 	if (Width <= 0 || Height <= 0 || Width > 4096 || Height > 4096)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("VTFReader: Invalid dimensions %dx%d: %s"), Width, Height, *FilePath);
+		UE_LOG(LogTemp, Warning, TEXT("VTFReader: Invalid dimensions %dx%d: %s"), Width, Height, *DebugName);
 		return nullptr;
 	}
 
@@ -184,14 +189,14 @@ UTexture2D* FVTFReader::LoadVTF(const FString& FilePath)
 	int32 FullMipSize = CalcImageSize(Format, Width, Height);
 	if (FullMipSize == 0)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("VTFReader: Unsupported format %d: %s"), Format, *FilePath);
+		UE_LOG(LogTemp, Warning, TEXT("VTFReader: Unsupported format %d: %s"), Format, *DebugName);
 		return nullptr;
 	}
 
 	if (MipDataOffset + FullMipSize > FileData.Num())
 	{
 		UE_LOG(LogTemp, Warning, TEXT("VTFReader: Data truncated (need %d, have %d): %s"),
-			MipDataOffset + FullMipSize, FileData.Num(), *FilePath);
+			MipDataOffset + FullMipSize, FileData.Num(), *DebugName);
 		return nullptr;
 	}
 
@@ -233,7 +238,7 @@ UTexture2D* FVTFReader::LoadVTF(const FString& FilePath)
 		TArray<uint8> BGRA;
 		if (!ConvertToBGRA8(MipData, FullMipSize, Format, Width, Height, BGRA))
 		{
-			UE_LOG(LogTemp, Warning, TEXT("VTFReader: Failed to convert format %d: %s"), Format, *FilePath);
+			UE_LOG(LogTemp, Warning, TEXT("VTFReader: Failed to convert format %d: %s"), Format, *DebugName);
 			return nullptr;
 		}
 
