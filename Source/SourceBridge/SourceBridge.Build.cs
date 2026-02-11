@@ -17,7 +17,11 @@ public class SourceBridge : ModuleRules
 		{
 			"UnrealEd",
 			"Slate",
-			"SlateCore"
+			"SlateCore",
+			"RenderCore",
+			"RHI",
+			"MeshDescription",
+			"StaticMeshDescription"
 		});
 	}
 }

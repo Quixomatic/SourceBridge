@@ -1,9 +1,13 @@
 #include "SourceBridgeModule.h"
 #include "VMF/VMFExporter.h"
 #include "Compile/CompilePipeline.h"
+#include "Models/SMDExporter.h"
+#include "Models/QCWriter.h"
 #include "HAL/PlatformFilemanager.h"
 #include "Misc/FileHelper.h"
 #include "Engine/World.h"
+#include "Engine/StaticMeshActor.h"
+#include "Engine/Selection.h"
 #include "Editor.h"
 
 #define LOCTEXT_NAMESPACE "FSourceBridgeModule"
@@ -126,7 +130,84 @@ void FSourceBridgeModule::StartupModule()
 		})
 	);
 
-	UE_LOG(LogTemp, Log, TEXT("SourceBridge plugin loaded. Commands: SourceBridge.ExportScene, SourceBridge.ExportTestBoxRoom, SourceBridge.CompileMap"));
+	ExportModelCommand = MakeShared<FAutoConsoleCommand>(
+		TEXT("SourceBridge.ExportModel"),
+		TEXT("Export a static mesh to SMD+QC. Usage: SourceBridge.ExportModel <mesh_path> [output_dir]"),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			if (Args.Num() < 1)
+			{
+				UE_LOG(LogTemp, Error, TEXT("SourceBridge: Usage: SourceBridge.ExportModel <mesh_asset_path> [output_dir]"));
+				return;
+			}
+
+			// Load the static mesh asset
+			UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *Args[0]);
+			if (!Mesh)
+			{
+				UE_LOG(LogTemp, Error, TEXT("SourceBridge: Could not load mesh: %s"), *Args[0]);
+				return;
+			}
+
+			FString OutputDir;
+			if (Args.Num() > 1)
+			{
+				OutputDir = Args[1];
+			}
+			else
+			{
+				OutputDir = FPaths::ProjectSavedDir() / TEXT("SourceBridge") / TEXT("models");
+			}
+
+			IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+			PlatformFile.CreateDirectoryTree(*OutputDir);
+
+			// Export to SMD
+			FSMDExportResult Result = FSMDExporter::ExportStaticMesh(Mesh);
+			if (!Result.bSuccess)
+			{
+				UE_LOG(LogTemp, Error, TEXT("SourceBridge: SMD export failed: %s"), *Result.ErrorMessage);
+				return;
+			}
+
+			// Generate QC settings
+			FQCSettings QCSettings = FQCWriter::MakeDefaultSettings(Mesh->GetName());
+
+			// Write files
+			FString BaseName = Mesh->GetName().ToLower();
+			if (BaseName.StartsWith(TEXT("SM_"))) BaseName = BaseName.Mid(3);
+			else if (BaseName.StartsWith(TEXT("S_"))) BaseName = BaseName.Mid(2);
+
+			FString RefPath = OutputDir / BaseName + TEXT("_ref.smd");
+			FString PhysPath = OutputDir / BaseName + TEXT("_phys.smd");
+			FString IdlePath = OutputDir / BaseName + TEXT("_idle.smd");
+			FString QCPath = OutputDir / BaseName + TEXT(".qc");
+
+			bool bAllWritten = true;
+			bAllWritten &= FFileHelper::SaveStringToFile(Result.ReferenceSMD, *RefPath);
+			bAllWritten &= FFileHelper::SaveStringToFile(Result.PhysicsSMD, *PhysPath);
+			bAllWritten &= FFileHelper::SaveStringToFile(Result.IdleSMD, *IdlePath);
+
+			FString QCContent = FQCWriter::GenerateQC(QCSettings);
+			bAllWritten &= FFileHelper::SaveStringToFile(QCContent, *QCPath);
+
+			if (bAllWritten)
+			{
+				UE_LOG(LogTemp, Log, TEXT("SourceBridge: Model exported to: %s"), *OutputDir);
+				UE_LOG(LogTemp, Log, TEXT("  Reference: %s"), *RefPath);
+				UE_LOG(LogTemp, Log, TEXT("  Physics:   %s"), *PhysPath);
+				UE_LOG(LogTemp, Log, TEXT("  Idle:      %s"), *IdlePath);
+				UE_LOG(LogTemp, Log, TEXT("  QC:        %s"), *QCPath);
+				UE_LOG(LogTemp, Log, TEXT("  Materials: %s"), *FString::Join(Result.MaterialNames, TEXT(", ")));
+			}
+			else
+			{
+				UE_LOG(LogTemp, Error, TEXT("SourceBridge: Failed to write some model files to: %s"), *OutputDir);
+			}
+		})
+	);
+
+	UE_LOG(LogTemp, Log, TEXT("SourceBridge plugin loaded. Commands: SourceBridge.ExportScene, SourceBridge.ExportTestBoxRoom, SourceBridge.CompileMap, SourceBridge.ExportModel"));
 }
 
 void FSourceBridgeModule::ShutdownModule()
@@ -134,6 +215,7 @@ void FSourceBridgeModule::ShutdownModule()
 	ExportTestBoxRoomCommand.Reset();
 	ExportSceneCommand.Reset();
 	CompileMapCommand.Reset();
+	ExportModelCommand.Reset();
 }
 
 #undef LOCTEXT_NAMESPACE

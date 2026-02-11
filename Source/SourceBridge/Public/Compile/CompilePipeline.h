@@ -24,6 +24,24 @@ struct SOURCEBRIDGE_API FCompileSettings
 };
 
 /**
+ * Settings for a Source engine model compile.
+ */
+struct SOURCEBRIDGE_API FModelCompileSettings
+{
+	/** Path to the game directory */
+	FString GameDir;
+
+	/** Path to the Source SDK bin directory */
+	FString ToolsDir;
+
+	/** Path to the QC file to compile */
+	FString QCPath;
+
+	/** Copy resulting MDL files to game's models/ folder */
+	bool bCopyToGame = true;
+};
+
+/**
  * Result of a compile step or full pipeline.
  */
 struct SOURCEBRIDGE_API FCompileResult
@@ -48,6 +66,12 @@ public:
 	 * Optionally copies BSP to game's maps/ folder.
 	 */
 	static FCompileResult CompileMap(const FCompileSettings& Settings);
+
+	/**
+	 * Run studiomdl to compile a model from QC file.
+	 * Optionally copies output files to game's models/ folder.
+	 */
+	static FCompileResult CompileModel(const FModelCompileSettings& Settings);
 
 	/**
 	 * Try to auto-detect Source SDK tools in common Steam install paths.

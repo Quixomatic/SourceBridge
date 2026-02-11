@@ -119,6 +119,56 @@ FCompileResult FCompilePipeline::CompileMap(const FCompileSettings& Settings)
 	return FinalResult;
 }
 
+FCompileResult FCompilePipeline::CompileModel(const FModelCompileSettings& Settings)
+{
+	FCompileResult Result;
+	double StartTime = FPlatformTime::Seconds();
+
+	if (Settings.ToolsDir.IsEmpty())
+	{
+		Result.ErrorMessage = TEXT("Tools directory not set.");
+		return Result;
+	}
+
+	if (Settings.GameDir.IsEmpty())
+	{
+		Result.ErrorMessage = TEXT("Game directory not set.");
+		return Result;
+	}
+
+	if (Settings.QCPath.IsEmpty() || !FPaths::FileExists(Settings.QCPath))
+	{
+		Result.ErrorMessage = FString::Printf(TEXT("QC file not found: %s"), *Settings.QCPath);
+		return Result;
+	}
+
+	FString StudioMDLPath = Settings.ToolsDir / TEXT("studiomdl.exe");
+	FString Args = FString::Printf(TEXT("-nop4 -game \"%s\" \"%s\""),
+		*Settings.GameDir, *Settings.QCPath);
+
+	UE_LOG(LogTemp, Log, TEXT("SourceBridge: Running studiomdl..."));
+	FCompileResult MDLResult = RunTool(StudioMDLPath, Args, TEXT("studiomdl"));
+	Result.Output = MDLResult.Output;
+
+	if (!MDLResult.bSuccess)
+	{
+		Result.ErrorMessage = TEXT("studiomdl failed: ") + MDLResult.ErrorMessage;
+		Result.ElapsedSeconds = FPlatformTime::Seconds() - StartTime;
+		return Result;
+	}
+
+	// studiomdl outputs files to the game's models/ folder automatically
+	// based on $modelname in the QC file
+
+	Result.bSuccess = true;
+	Result.ElapsedSeconds = FPlatformTime::Seconds() - StartTime;
+
+	UE_LOG(LogTemp, Log, TEXT("SourceBridge: Model compile completed in %.1f seconds."),
+		Result.ElapsedSeconds);
+
+	return Result;
+}
+
 FCompileResult FCompilePipeline::RunTool(
 	const FString& ToolPath,
 	const FString& Arguments,
