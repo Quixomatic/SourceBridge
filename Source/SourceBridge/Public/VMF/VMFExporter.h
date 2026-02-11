@@ -55,4 +55,16 @@ private:
 
 	/** Get default UV axes for an axis-aligned face given its outward normal direction. */
 	static void GetDefaultUVAxes(const FVector& Normal, FString& OutUAxis, FString& OutVAxis);
+
+	/**
+	 * Export brush entities (triggers, water volumes, etc.) with solid geometry.
+	 * Entities with bIsBrushEntity=true need their UE brush geometry embedded as VMF solids.
+	 */
+	static void ExportBrushEntities(
+		const TArray<struct FSourceEntity>& Entities,
+		int32& EntityIdCounter,
+		int32& SolidIdCounter,
+		int32& SideIdCounter,
+		const FMaterialMapper& MatMapper,
+		FString& Result);
 };

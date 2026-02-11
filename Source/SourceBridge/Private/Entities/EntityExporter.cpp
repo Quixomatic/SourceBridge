@@ -493,6 +493,8 @@ bool FEntityExporter::TryExportTriggerVolume(AActor* Actor, FEntityExportResult&
 	Entity.ClassName = TEXT("trigger_multiple");
 	Entity.Origin = Actor->GetActorLocation();
 	Entity.Angles = Actor->GetActorRotation();
+	Entity.bIsBrushEntity = true;
+	Entity.SourceActor = Actor;
 
 	// Default trigger properties
 	Entity.AddKeyValue(TEXT("spawnflags"), TEXT("1")); // Clients only
@@ -537,6 +539,8 @@ bool FEntityExporter::TryExportWaterVolume(AActor* Actor, FEntityExportResult& R
 	Entity.ClassName = TEXT("func_water_analog");
 	Entity.Origin = Actor->GetActorLocation();
 	Entity.Angles = Actor->GetActorRotation();
+	Entity.bIsBrushEntity = true;
+	Entity.SourceActor = Actor;
 
 	// Water-specific keyvalues
 	Entity.AddKeyValue(TEXT("WaveHeight"), TEXT("3.0"));

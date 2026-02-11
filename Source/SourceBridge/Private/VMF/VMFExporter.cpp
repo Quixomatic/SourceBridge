@@ -7,6 +7,8 @@
 #include "Utilities/SourceCoord.h"
 #include "Engine/Brush.h"
 #include "Engine/World.h"
+#include "Engine/TriggerVolume.h"
+#include "Engine/TriggerBox.h"
 #include "EngineUtils.h"
 #include "GameFramework/Volume.h"
 
@@ -57,6 +59,9 @@ FString FVMFExporter::ExportScene(UWorld* World)
 	// Material mapper resolves UE materials to Source material paths
 	FMaterialMapper MatMapper;
 
+	// Deferred brush entities (func_detail, func_wall, etc.) - written after worldspawn
+	TArray<FVMFKeyValues> BrushEntities;
+
 	for (TActorIterator<ABrush> It(World); It; ++It)
 	{
 		ABrush* Brush = *It;
@@ -73,6 +78,57 @@ FString FVMFExporter::ExportScene(UWorld* World)
 			continue;
 		}
 
+		// Check if this brush should be a brush entity (func_detail, func_wall, etc.)
+		FString BrushEntityClass;
+		FString BrushTargetName;
+		TArray<TPair<FString, FString>> BrushExtraKV;
+		for (const FName& Tag : Brush->Tags)
+		{
+			FString TagStr = Tag.ToString();
+
+			if (TagStr.StartsWith(TEXT("classname:"), ESearchCase::IgnoreCase))
+			{
+				BrushEntityClass = TagStr.Mid(10);
+			}
+			else if (TagStr.Equals(TEXT("func_detail"), ESearchCase::IgnoreCase))
+			{
+				BrushEntityClass = TEXT("func_detail");
+			}
+			else if (TagStr.Equals(TEXT("func_wall"), ESearchCase::IgnoreCase))
+			{
+				BrushEntityClass = TEXT("func_wall");
+			}
+			else if (TagStr.Equals(TEXT("func_door"), ESearchCase::IgnoreCase))
+			{
+				BrushEntityClass = TEXT("func_door");
+			}
+			else if (TagStr.Equals(TEXT("func_brush"), ESearchCase::IgnoreCase))
+			{
+				BrushEntityClass = TEXT("func_brush");
+			}
+			else if (TagStr.Equals(TEXT("func_illusionary"), ESearchCase::IgnoreCase))
+			{
+				BrushEntityClass = TEXT("func_illusionary");
+			}
+			else if (TagStr.Equals(TEXT("func_breakable"), ESearchCase::IgnoreCase))
+			{
+				BrushEntityClass = TEXT("func_breakable");
+			}
+			else if (TagStr.StartsWith(TEXT("targetname:"), ESearchCase::IgnoreCase))
+			{
+				BrushTargetName = TagStr.Mid(11);
+			}
+			else if (TagStr.StartsWith(TEXT("kv:"), ESearchCase::IgnoreCase))
+			{
+				FString Remainder = TagStr.Mid(3);
+				int32 ColonIdx;
+				if (Remainder.FindChar(TEXT(':'), ColonIdx))
+				{
+					BrushExtraKV.Emplace(Remainder.Left(ColonIdx), Remainder.Mid(ColonIdx + 1));
+				}
+			}
+		}
+
 		FBrushConversionResult ConvResult = FBrushConverter::ConvertBrush(
 			Brush, SolidIdCounter, SideIdCounter, &MatMapper);
 
@@ -81,15 +137,48 @@ FString FVMFExporter::ExportScene(UWorld* World)
 			UE_LOG(LogTemp, Warning, TEXT("SourceBridge: %s"), *Warning);
 		}
 
-		for (FVMFKeyValues& Solid : ConvResult.Solids)
+		if (ConvResult.Solids.Num() == 0)
 		{
-			WorldNode.Children.Add(MoveTemp(Solid));
-			BrushCount++;
+			if (ConvResult.Warnings.Num() > 0)
+			{
+				SkippedCount++;
+			}
+			continue;
 		}
 
-		if (ConvResult.Solids.Num() == 0 && ConvResult.Warnings.Num() > 0)
+		if (!BrushEntityClass.IsEmpty())
 		{
-			SkippedCount++;
+			// Emit as a brush entity
+			FVMFKeyValues BrushEntity(TEXT("entity"));
+			BrushEntity.AddProperty(TEXT("id"), SolidIdCounter++);
+			BrushEntity.AddProperty(TEXT("classname"), BrushEntityClass);
+
+			if (!BrushTargetName.IsEmpty())
+			{
+				BrushEntity.AddProperty(TEXT("targetname"), BrushTargetName);
+			}
+
+			for (const auto& KV : BrushExtraKV)
+			{
+				BrushEntity.AddProperty(KV.Key, KV.Value);
+			}
+
+			for (FVMFKeyValues& Solid : ConvResult.Solids)
+			{
+				BrushEntity.Children.Add(MoveTemp(Solid));
+				BrushCount++;
+			}
+
+			BrushEntities.Add(MoveTemp(BrushEntity));
+		}
+		else
+		{
+			// Add to worldspawn as structural geometry
+			for (FVMFKeyValues& Solid : ConvResult.Solids)
+			{
+				WorldNode.Children.Add(MoveTemp(Solid));
+				BrushCount++;
+			}
 		}
 	}
 
@@ -104,9 +193,20 @@ FString FVMFExporter::ExportScene(UWorld* World)
 	// Entity IDs continue after solid IDs
 	EntityIdCounter = SolidIdCounter;
 
-	// Write point entities (spawns, lights, triggers, etc.)
+	// Write brush entities (func_detail, func_wall, func_door, etc.)
+	for (FVMFKeyValues& BrushEntity : BrushEntities)
+	{
+		Result += BrushEntity.Serialize();
+		EntityIdCounter++;
+	}
+
+	// Write point entities (spawns, lights, etc.) - skip brush entities handled separately
 	for (const FSourceEntity& Entity : EntityResult.Entities)
 	{
+		if (Entity.bIsBrushEntity)
+		{
+			continue; // Handled by ExportBrushEntities below
+		}
 		Result += FEntityExporter::EntityToVMF(Entity, EntityIdCounter++).Serialize();
 	}
 
@@ -124,11 +224,14 @@ FString FVMFExporter::ExportScene(UWorld* World)
 		Result += PropEntity.Serialize();
 	}
 
+	// Export brush entities (triggers, water volumes) with solid geometry
+	ExportBrushEntities(EntityResult.Entities, EntityIdCounter, SolidIdCounter, SideIdCounter, MatMapper, Result);
+
 	Result += BuildCameras().Serialize();
 	Result += BuildCordon().Serialize();
 
-	UE_LOG(LogTemp, Log, TEXT("SourceBridge: Exported %d brushes (%d skipped), %d entities, %d props to VMF."),
-		BrushCount, SkippedCount, EntityResult.Entities.Num(), PropEntities.Num());
+	UE_LOG(LogTemp, Log, TEXT("SourceBridge: Exported %d brushes (%d skipped), %d brush entities, %d entities, %d props to VMF."),
+		BrushCount, SkippedCount, BrushEntities.Num(), EntityResult.Entities.Num(), PropEntities.Num());
 
 	return Result;
 }
@@ -340,4 +443,99 @@ FVMFKeyValues FVMFExporter::BuildCordon()
 	Node.AddProperty(TEXT("maxs"), TEXT("(1024 1024 1024)"));
 	Node.AddProperty(TEXT("active"), 0);
 	return Node;
+}
+
+void FVMFExporter::ExportBrushEntities(
+	const TArray<FSourceEntity>& Entities,
+	int32& EntityIdCounter,
+	int32& SolidIdCounter,
+	int32& SideIdCounter,
+	const FMaterialMapper& MatMapper,
+	FString& Result)
+{
+	for (const FSourceEntity& Entity : Entities)
+	{
+		if (!Entity.bIsBrushEntity || !Entity.SourceActor.IsValid())
+		{
+			continue;
+		}
+
+		AActor* Actor = Entity.SourceActor.Get();
+		ABrush* BrushActor = Cast<ABrush>(Actor);
+		if (!BrushActor)
+		{
+			// Non-brush actor tagged as brush entity (shouldn't happen, but fallback to point entity)
+			Result += FEntityExporter::EntityToVMF(Entity, EntityIdCounter++).Serialize();
+			continue;
+		}
+
+		// Determine default material for brush faces based on entity type
+		FString DefaultMaterial = TEXT("TOOLS/TOOLSTRIGGER");
+		if (Entity.ClassName.Contains(TEXT("water")))
+		{
+			// Check for water material stored as internal keyvalue
+			for (const auto& KV : Entity.KeyValues)
+			{
+				if (KV.Key == TEXT("_water_material"))
+				{
+					DefaultMaterial = KV.Value;
+					break;
+				}
+			}
+		}
+		else if (Entity.ClassName.StartsWith(TEXT("func_")))
+		{
+			DefaultMaterial = TEXT("DEV/DEV_MEASUREWALL01A");
+		}
+
+		// Convert UE brush geometry to VMF solids
+		FBrushConversionResult ConvResult = FBrushConverter::ConvertBrush(
+			BrushActor, SolidIdCounter, SideIdCounter, &MatMapper,
+			DefaultMaterial);
+
+		if (ConvResult.Solids.Num() == 0)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("SourceBridge: Brush entity '%s' (%s) has no convertible geometry, exporting as point entity."),
+				*Entity.TargetName, *Entity.ClassName);
+			Result += FEntityExporter::EntityToVMF(Entity, EntityIdCounter++).Serialize();
+			continue;
+		}
+
+		// Build the brush entity with embedded solids
+		FVMFKeyValues BrushEntity(TEXT("entity"));
+		BrushEntity.AddProperty(TEXT("id"), EntityIdCounter++);
+		BrushEntity.AddProperty(TEXT("classname"), Entity.ClassName);
+
+		if (!Entity.TargetName.IsEmpty())
+		{
+			BrushEntity.AddProperty(TEXT("targetname"), Entity.TargetName);
+		}
+
+		// Key-values (skip internal markers like _water_material)
+		for (const auto& KV : Entity.KeyValues)
+		{
+			if (!KV.Key.StartsWith(TEXT("_")))
+			{
+				BrushEntity.AddProperty(KV.Key, KV.Value);
+			}
+		}
+
+		// I/O connections
+		if (Entity.Connections.Num() > 0)
+		{
+			FVMFKeyValues& ConnBlock = BrushEntity.AddChild(TEXT("connections"));
+			for (const FEntityIOConnection& Conn : Entity.Connections)
+			{
+				ConnBlock.AddProperty(Conn.OutputName, Conn.FormatValue());
+			}
+		}
+
+		// Embed solid geometry
+		for (FVMFKeyValues& Solid : ConvResult.Solids)
+		{
+			BrushEntity.Children.Add(MoveTemp(Solid));
+		}
+
+		Result += BrushEntity.Serialize();
+	}
 }

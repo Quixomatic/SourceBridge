@@ -22,6 +22,12 @@ struct SOURCEBRIDGE_API FSourceEntity
 	/** Entity I/O connections */
 	TArray<FEntityIOConnection> Connections;
 
+	/** True if this entity requires brush geometry (trigger_multiple, func_water_analog, etc.) */
+	bool bIsBrushEntity = false;
+
+	/** The UE actor this entity was exported from (for brush entity geometry lookup) */
+	TWeakObjectPtr<AActor> SourceActor;
+
 	FSourceEntity()
 		: Origin(FVector::ZeroVector)
 		, Angles(FRotator::ZeroRotator)
