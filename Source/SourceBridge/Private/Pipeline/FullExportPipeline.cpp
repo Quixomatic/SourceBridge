@@ -2,10 +2,15 @@
 #include "VMF/VMFExporter.h"
 #include "Validation/ExportValidator.h"
 #include "Compile/CompilePipeline.h"
+#include "Models/SMDExporter.h"
+#include "Models/QCWriter.h"
 #include "HAL/PlatformFilemanager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Engine/World.h"
+#include "Engine/StaticMeshActor.h"
+#include "Engine/StaticMesh.h"
+#include "EngineUtils.h"
 
 FFullExportResult FFullExportPipeline::Run(UWorld* World, const FFullExportSettings& Settings)
 {
@@ -74,7 +79,97 @@ FFullExportResult FFullExportPipeline::Run(UWorld* World, const FFullExportSetti
 
 	Result.VMFPath = OutputDir / MapName + TEXT(".vmf");
 
-	// ---- Step 3: Export VMF ----
+	// Detect compile tools early (needed for model compile and map compile)
+	FString ToolsDir;
+	FString GameDir;
+	if (Settings.bCompile)
+	{
+		ToolsDir = FCompilePipeline::FindToolsDirectory();
+		GameDir = FCompilePipeline::FindGameDirectory(Settings.GameName);
+	}
+
+	// ---- Step 3: Export and compile models (dependency: before map compile) ----
+	// Models must be compiled before the map so prop_static references resolve
+	if (Settings.bCompile && !ToolsDir.IsEmpty() && !GameDir.IsEmpty())
+	{
+		FString ModelsDir = OutputDir / TEXT("models");
+		PlatformFile.CreateDirectoryTree(*ModelsDir);
+
+		int32 ModelCount = 0;
+		int32 ModelErrors = 0;
+
+		for (TActorIterator<AStaticMeshActor> It(World); It; ++It)
+		{
+			AStaticMeshActor* Actor = *It;
+			if (!Actor) continue;
+
+			UStaticMeshComponent* MeshComp = Actor->GetStaticMeshComponent();
+			if (!MeshComp) continue;
+
+			UStaticMesh* Mesh = MeshComp->GetStaticMesh();
+			if (!Mesh) continue;
+
+			// Skip meshes that are just BSP geometry references
+			FString MeshName = Mesh->GetName();
+			if (MeshName.StartsWith(TEXT("Default")) || MeshName.IsEmpty())
+			{
+				continue;
+			}
+
+			// Export SMD
+			FSMDExportResult SMDResult = FSMDExporter::ExportStaticMesh(Mesh);
+			if (!SMDResult.bSuccess)
+			{
+				Result.Warnings.Add(FString::Printf(TEXT("[Models] Failed to export %s: %s"),
+					*MeshName, *SMDResult.ErrorMessage));
+				ModelErrors++;
+				continue;
+			}
+
+			FString BaseName = MeshName.ToLower();
+			if (BaseName.StartsWith(TEXT("SM_"))) BaseName = BaseName.Mid(3);
+			else if (BaseName.StartsWith(TEXT("S_"))) BaseName = BaseName.Mid(2);
+
+			FString RefPath = ModelsDir / BaseName + TEXT("_ref.smd");
+			FString PhysPath = ModelsDir / BaseName + TEXT("_phys.smd");
+			FString IdlePath = ModelsDir / BaseName + TEXT("_idle.smd");
+			FString QCPath = ModelsDir / BaseName + TEXT(".qc");
+
+			FFileHelper::SaveStringToFile(SMDResult.ReferenceSMD, *RefPath);
+			FFileHelper::SaveStringToFile(SMDResult.PhysicsSMD, *PhysPath);
+			FFileHelper::SaveStringToFile(SMDResult.IdleSMD, *IdlePath);
+
+			FQCSettings QCSettings = FQCWriter::MakeDefaultSettings(MeshName);
+			FString QCContent = FQCWriter::GenerateQC(QCSettings);
+			FFileHelper::SaveStringToFile(QCContent, *QCPath);
+
+			// Compile with studiomdl
+			FModelCompileSettings ModelSettings;
+			ModelSettings.ToolsDir = ToolsDir;
+			ModelSettings.GameDir = GameDir;
+			ModelSettings.QCPath = QCPath;
+
+			FCompileResult ModelResult = FCompilePipeline::CompileModel(ModelSettings);
+			if (ModelResult.bSuccess)
+			{
+				ModelCount++;
+			}
+			else
+			{
+				ModelErrors++;
+				Result.Warnings.Add(FString::Printf(TEXT("[Models] studiomdl failed for %s: %s"),
+					*BaseName, *ModelResult.ErrorMessage));
+			}
+		}
+
+		if (ModelCount > 0 || ModelErrors > 0)
+		{
+			UE_LOG(LogTemp, Log, TEXT("SourceBridge: Model compile: %d succeeded, %d failed"),
+				ModelCount, ModelErrors);
+		}
+	}
+
+	// ---- Step 4: Export VMF ----
 	UE_LOG(LogTemp, Log, TEXT("SourceBridge: Exporting scene to VMF..."));
 	FString VMFContent = FVMFExporter::ExportScene(World);
 
@@ -94,15 +189,16 @@ FFullExportResult FFullExportPipeline::Run(UWorld* World, const FFullExportSetti
 	UE_LOG(LogTemp, Log, TEXT("SourceBridge: VMF exported to %s (%.1f seconds)"),
 		*Result.VMFPath, Result.ExportSeconds);
 
-	// ---- Step 4: Compile ----
+	// ---- Step 5: Compile map (dependency: after materials and models) ----
 	if (Settings.bCompile)
 	{
 		FCompileSettings CompileSettings;
 		CompileSettings.VMFPath = Result.VMFPath;
 		CompileSettings.bFastCompile = Settings.bFastCompile;
+		CompileSettings.bFinalCompile = Settings.bFinalCompile;
 		CompileSettings.bCopyToGame = Settings.bCopyToGame;
-		CompileSettings.ToolsDir = FCompilePipeline::FindToolsDirectory();
-		CompileSettings.GameDir = FCompilePipeline::FindGameDirectory(Settings.GameName);
+		CompileSettings.ToolsDir = ToolsDir;
+		CompileSettings.GameDir = GameDir;
 
 		if (CompileSettings.ToolsDir.IsEmpty())
 		{

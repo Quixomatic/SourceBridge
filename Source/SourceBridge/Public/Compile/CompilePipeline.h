@@ -19,6 +19,9 @@ struct SOURCEBRIDGE_API FCompileSettings
 	/** Use -fast flag for quick test compiles (low quality vis/rad) */
 	bool bFastCompile = true;
 
+	/** Use -final flag for high quality lighting (slow) */
+	bool bFinalCompile = false;
+
 	/** Copy resulting BSP to game's maps/ folder */
 	bool bCopyToGame = true;
 };

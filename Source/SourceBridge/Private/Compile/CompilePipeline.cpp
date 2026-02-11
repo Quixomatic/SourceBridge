@@ -73,12 +73,21 @@ FCompileResult FCompilePipeline::CompileMap(const FCompileSettings& Settings)
 	// ---- VRAD (lighting) ----
 	{
 		FString VRADPath = Settings.ToolsDir / TEXT("vrad.exe");
-		FString FastFlag = Settings.bFastCompile ? TEXT("-fast ") : TEXT("");
+		FString QualityFlag;
+		if (Settings.bFinalCompile)
+		{
+			QualityFlag = TEXT("-final ");
+		}
+		else if (Settings.bFastCompile)
+		{
+			QualityFlag = TEXT("-fast ");
+		}
 		FString Args = FString::Printf(TEXT("%s-game \"%s\" \"%s\""),
-			*FastFlag, *Settings.GameDir, *BSPPath);
+			*QualityFlag, *Settings.GameDir, *BSPPath);
 
-		UE_LOG(LogTemp, Log, TEXT("SourceBridge: Running VRAD%s..."),
-			Settings.bFastCompile ? TEXT(" (fast)") : TEXT(""));
+		FString QualityLabel = Settings.bFinalCompile ? TEXT(" (final)") :
+			(Settings.bFastCompile ? TEXT(" (fast)") : TEXT(""));
+		UE_LOG(LogTemp, Log, TEXT("SourceBridge: Running VRAD%s..."), *QualityLabel);
 		FCompileResult VRADResult = RunTool(VRADPath, Args, TEXT("VRAD"));
 		FinalResult.Output += VRADResult.Output + TEXT("\n");
 
@@ -293,7 +302,69 @@ TArray<FString> FCompilePipeline::GetSteamLibraryPaths()
 	Paths.Add(TEXT("E:/Steam"));
 	Paths.Add(TEXT("E:/SteamLibrary"));
 
-	// TODO: Parse libraryfolders.vdf for additional Steam library locations
+	// Parse libraryfolders.vdf for additional Steam library locations
+	// The VDF is located at <steam>/steamapps/libraryfolders.vdf
+	TArray<FString> VDFSearchPaths = {
+		TEXT("C:/Program Files (x86)/Steam/steamapps/libraryfolders.vdf"),
+		TEXT("C:/Program Files/Steam/steamapps/libraryfolders.vdf"),
+		TEXT("D:/Steam/steamapps/libraryfolders.vdf"),
+	};
+
+	for (const FString& VDFPath : VDFSearchPaths)
+	{
+		if (!FPaths::FileExists(VDFPath))
+		{
+			continue;
+		}
+
+		FString VDFContent;
+		if (!FFileHelper::LoadFileToString(VDFContent, *VDFPath))
+		{
+			continue;
+		}
+
+		// Parse "path" keys from the VDF file
+		// Format: "path"		"C:\\SteamLibrary"
+		int32 SearchStart = 0;
+		while (SearchStart < VDFContent.Len())
+		{
+			int32 PathKeyIdx = VDFContent.Find(TEXT("\"path\""), ESearchCase::IgnoreCase, ESearchDir::FromStart, SearchStart);
+			if (PathKeyIdx == INDEX_NONE)
+			{
+				break;
+			}
+
+			// Find the value after "path" - skip to the next quoted string
+			int32 ValueStart = VDFContent.Find(TEXT("\""), ESearchCase::CaseSensitive, ESearchDir::FromStart, PathKeyIdx + 6);
+			if (ValueStart == INDEX_NONE)
+			{
+				break;
+			}
+			ValueStart++; // skip opening quote
+
+			int32 ValueEnd = VDFContent.Find(TEXT("\""), ESearchCase::CaseSensitive, ESearchDir::FromStart, ValueStart);
+			if (ValueEnd == INDEX_NONE)
+			{
+				break;
+			}
+
+			FString LibPath = VDFContent.Mid(ValueStart, ValueEnd - ValueStart);
+			// Unescape backslashes from VDF format
+			LibPath = LibPath.Replace(TEXT("\\\\"), TEXT("/"));
+			LibPath = LibPath.Replace(TEXT("\\"), TEXT("/"));
+
+			if (!LibPath.IsEmpty() && !Paths.Contains(LibPath))
+			{
+				Paths.Add(LibPath);
+				UE_LOG(LogTemp, Log, TEXT("SourceBridge: Found Steam library path from VDF: %s"), *LibPath);
+			}
+
+			SearchStart = ValueEnd + 1;
+		}
+
+		// Only need to parse one VDF file
+		break;
+	}
 
 	return Paths;
 }

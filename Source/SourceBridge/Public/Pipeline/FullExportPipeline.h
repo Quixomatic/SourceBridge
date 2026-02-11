@@ -24,6 +24,9 @@ struct SOURCEBRIDGE_API FFullExportSettings
 	/** Use fast compile flags */
 	bool bFastCompile = true;
 
+	/** Use -final flag for high quality lighting */
+	bool bFinalCompile = false;
+
 	/** Copy results to game directory */
 	bool bCopyToGame = true;
 
