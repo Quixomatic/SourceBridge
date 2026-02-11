@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          # Extract the section for this version from CHANGELOG.md
+          VERSION="${{ steps.version.outputs.version }}"
+          NOTES=$(awk -v ver="$VERSION" '
+            /^## \[/ {
+              if (found) exit
+              if (index($0, "[" ver "]")) found=1
+              next
+            }
+            found { print }
+          ' CHANGELOG.md)
+
+          # Write to file for the release body
+          echo "$NOTES" > release_notes.md
+
+      - name: Package plugin
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          PLUGIN_DIR="SourceBridge"
+          mkdir -p "$PLUGIN_DIR"
+
+          # Copy plugin files
+          cp -r Source/ "$PLUGIN_DIR/Source/"
+          cp -r Config/ "$PLUGIN_DIR/Config/" 2>/dev/null || true
+          cp -r Resources/ "$PLUGIN_DIR/Resources/" 2>/dev/null || true
+          cp -r Content/ "$PLUGIN_DIR/Content/" 2>/dev/null || true
+          cp SourceBridge.uplugin "$PLUGIN_DIR/"
+          cp CHANGELOG.md "$PLUGIN_DIR/"
+          cp LICENSE "$PLUGIN_DIR/" 2>/dev/null || true
+          cp README.md "$PLUGIN_DIR/" 2>/dev/null || true
+
+          zip -r "SourceBridge-v${VERSION}.zip" "$PLUGIN_DIR"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: SourceBridge v${{ steps.version.outputs.version }}
+          body_path: release_notes.md
+          files: SourceBridge-v${{ steps.version.outputs.version }}.zip
+          draft: false
+          prerelease: false
