@@ -26,7 +26,9 @@ public class SourceBridge : ModuleRules
 			"Foliage",
 			"EditorStyle",
 			"ToolMenus",
-			"InputCore"
+			"InputCore",
+			"PropertyEditor",
+			"AssetRegistry"
 		});
 	}
 }
