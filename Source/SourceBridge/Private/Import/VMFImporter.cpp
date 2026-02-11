@@ -1,5 +1,6 @@
 #include "Import/VMFImporter.h"
 #include "Import/VMFReader.h"
+#include "Import/MaterialImporter.h"
 #include "Actors/SourceEntityActor.h"
 #include "Entities/EntityIOConnection.h"
 #include "Engine/Brush.h"
@@ -39,6 +40,9 @@ FVMFImportResult FVMFImporter::ImportBlocks(const TArray<FVMFKeyValues>& Blocks,
 		Result.Warnings.Add(TEXT("No world provided for import."));
 		return Result;
 	}
+
+	// Clear material cache for fresh import
+	FMaterialImporter::ClearCache();
 
 	for (const FVMFKeyValues& Block : Blocks)
 	{
