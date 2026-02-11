@@ -5,12 +5,15 @@
 #include "Engine/Brush.h"
 #include "Engine/Polys.h"
 #include "Engine/World.h"
+#include "Engine/DirectionalLight.h"
+#include "Components/DirectionalLightComponent.h"
 #include "Model.h"
 #include "Editor.h"
 #include "Components/PointLightComponent.h"
 #include "Components/SpotLightComponent.h"
 #include "Engine/PointLight.h"
 #include "Engine/SpotLight.h"
+#include "Engine/SphereReflectionCapture.h"
 
 FVMFImportResult FVMFImporter::ImportFile(const FString& FilePath, UWorld* World,
 	const FVMFImportSettings& Settings)
@@ -85,9 +88,23 @@ FVMFImportResult FVMFImporter::ImportBlocks(const TArray<FVMFKeyValues>& Blocks,
 				{
 					if (Child.ClassName.Equals(TEXT("solid"), ESearchCase::IgnoreCase))
 					{
-						if (ImportSolid(Child, World, Settings, Result))
+						ABrush* Brush = ImportSolid(Child, World, Settings, Result);
+						if (Brush)
 						{
-							// TODO: Tag the last created brush with entity class
+							// Tag the brush with entity class info
+							if (!EntityClass.IsEmpty())
+							{
+								Brush->Tags.Add(*FString::Printf(TEXT("source:%s"), *EntityClass));
+							}
+							if (!TargetName.IsEmpty())
+							{
+								Brush->Tags.Add(*FString::Printf(TEXT("targetname:%s"), *TargetName));
+								Brush->SetActorLabel(FString::Printf(TEXT("%s (%s)"), *TargetName, *EntityClass));
+							}
+							else if (!EntityClass.IsEmpty())
+							{
+								Brush->SetActorLabel(EntityClass);
+							}
 						}
 					}
 				}
@@ -113,6 +130,12 @@ FVector FVMFImporter::SourceToUE(const FVector& SourcePos, float Scale)
 	return FVector(SourcePos.X * Scale, -SourcePos.Y * Scale, SourcePos.Z * Scale);
 }
 
+FVector FVMFImporter::SourceDirToUE(const FVector& SourceDir)
+{
+	// Direction only: negate Y for handedness change, no scaling
+	return FVector(SourceDir.X, -SourceDir.Y, SourceDir.Z);
+}
+
 // ---- Parsing Helpers ----
 
 bool FVMFImporter::ParsePlanePoints(const FString& PlaneStr, FVector& P1, FVector& P2, FVector& P3)
@@ -136,6 +159,32 @@ bool FVMFImporter::ParsePlanePoints(const FString& PlaneStr, FVector& P1, FVecto
 	};
 
 	return ParseVec(Parts[0], P1) && ParseVec(Parts[1], P2) && ParseVec(Parts[2], P3);
+}
+
+bool FVMFImporter::ParseUVAxis(const FString& AxisStr, FVector& Axis, float& Offset, float& Scale)
+{
+	// Format: "[x y z offset] scale"
+	// Example: "[1 0 0 0] 0.25"
+	int32 BracketStart = AxisStr.Find(TEXT("["));
+	int32 BracketEnd = AxisStr.Find(TEXT("]"));
+	if (BracketStart == INDEX_NONE || BracketEnd == INDEX_NONE) return false;
+
+	FString Inside = AxisStr.Mid(BracketStart + 1, BracketEnd - BracketStart - 1).TrimStartAndEnd();
+	FString After = AxisStr.Mid(BracketEnd + 1).TrimStartAndEnd();
+
+	TArray<FString> Parts;
+	Inside.ParseIntoArrayWS(Parts);
+	if (Parts.Num() < 4) return false;
+
+	Axis.X = FCString::Atod(*Parts[0]);
+	Axis.Y = FCString::Atod(*Parts[1]);
+	Axis.Z = FCString::Atod(*Parts[2]);
+	Offset = FCString::Atof(*Parts[3]);
+	Scale = FCString::Atof(*After);
+
+	if (FMath::IsNearlyZero(Scale)) Scale = 0.25f;
+
+	return true;
 }
 
 FVector FVMFImporter::ParseOrigin(const FString& OriginStr)
@@ -269,9 +318,12 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 	UWorld* World,
 	const TArray<TArray<FVector>>& Faces,
 	const TArray<FVector>& FaceNormals,
-	float Scale)
+	const TArray<FVMFSideData>& SideData,
+	const FVMFImportSettings& Settings)
 {
 	if (Faces.Num() < 4) return nullptr;
+
+	float Scale = Settings.ScaleMultiplier;
 
 	// Compute center of all vertices for the brush origin
 	FVector Center = FVector::ZeroVector;
@@ -331,6 +383,38 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 			Poly.CalcNormal();
 		}
 
+		// Apply per-face data (material, UV axes)
+		if (FaceIdx < SideData.Num())
+		{
+			const FVMFSideData& Side = SideData[FaceIdx];
+
+			// Material name
+			if (Settings.bImportMaterials && !Side.Material.IsEmpty())
+			{
+				Poly.ItemName = FName(*Side.Material);
+			}
+
+			// Texture axes: convert Source UV axes to UE FPoly texture vectors
+			// Source: U_texel = (Pos · UAxis) / UScale + UOffset
+			// UE FPoly: TextureU/TextureV define the texture projection direction
+			FVector UEUAxis = SourceDirToUE(Side.UAxis);
+			FVector UEVAxis = SourceDirToUE(Side.VAxis);
+
+			// TextureU/V magnitude = 1/scale (texels per world unit)
+			// Also divide by import scale since vertices are scaled
+			if (!FMath::IsNearlyZero(Side.UScale))
+			{
+				Poly.TextureU = FVector3f(UEUAxis / (Side.UScale * Scale));
+			}
+			if (!FMath::IsNearlyZero(Side.VScale))
+			{
+				Poly.TextureV = FVector3f(UEVAxis / (Side.VScale * Scale));
+			}
+
+			// Base point for texture offset
+			Poly.Base = Poly.Vertices.Num() > 0 ? Poly.Vertices[0] : FVector3f::ZeroVector;
+		}
+
 		Model->Polys->Element.Add(MoveTemp(Poly));
 	}
 
@@ -341,25 +425,33 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 
 // ---- Solid Import ----
 
-bool FVMFImporter::ImportSolid(const FVMFKeyValues& SolidBlock, UWorld* World,
+ABrush* FVMFImporter::ImportSolid(const FVMFKeyValues& SolidBlock, UWorld* World,
 	const FVMFImportSettings& Settings, FVMFImportResult& Result)
 {
 	TArray<FPlane> Planes;
 	TArray<FVector> PlaneFirstPoints;
 	TArray<FVector> InwardNormals;
+	TArray<FVMFSideData> SideDataArray;
 
 	for (const FVMFKeyValues& Child : SolidBlock.Children)
 	{
 		if (!Child.ClassName.Equals(TEXT("side"), ESearchCase::IgnoreCase)) continue;
 
 		FString PlaneStr;
+		FVMFSideData SideData;
+
 		for (const auto& Prop : Child.Properties)
 		{
 			if (Prop.Key.Equals(TEXT("plane"), ESearchCase::IgnoreCase))
-			{
 				PlaneStr = Prop.Value;
-				break;
-			}
+			else if (Prop.Key.Equals(TEXT("material"), ESearchCase::IgnoreCase))
+				SideData.Material = Prop.Value;
+			else if (Prop.Key.Equals(TEXT("uaxis"), ESearchCase::IgnoreCase))
+				ParseUVAxis(Prop.Value, SideData.UAxis, SideData.UOffset, SideData.UScale);
+			else if (Prop.Key.Equals(TEXT("vaxis"), ESearchCase::IgnoreCase))
+				ParseUVAxis(Prop.Value, SideData.VAxis, SideData.VOffset, SideData.VScale);
+			else if (Prop.Key.Equals(TEXT("lightmapscale"), ESearchCase::IgnoreCase))
+				SideData.LightmapScale = FCString::Atoi(*Prop.Value);
 		}
 
 		if (PlaneStr.IsEmpty()) continue;
@@ -387,12 +479,13 @@ bool FVMFImporter::ImportSolid(const FVMFKeyValues& SolidBlock, UWorld* World,
 		Planes.Add(FPlane(P1, Normal));
 		PlaneFirstPoints.Add(P1);
 		InwardNormals.Add(Normal);
+		SideDataArray.Add(MoveTemp(SideData));
 	}
 
 	if (Planes.Num() < 4)
 	{
 		Result.Warnings.Add(TEXT("Solid has fewer than 4 valid planes, skipping."));
-		return false;
+		return nullptr;
 	}
 
 	// Reconstruct face polygons via CSG clipping
@@ -401,18 +494,18 @@ bool FVMFImporter::ImportSolid(const FVMFKeyValues& SolidBlock, UWorld* World,
 	if (Faces.Num() < 4)
 	{
 		Result.Warnings.Add(TEXT("CSG reconstruction produced fewer than 4 faces, skipping solid."));
-		return false;
+		return nullptr;
 	}
 
-	ABrush* Brush = CreateBrushFromFaces(World, Faces, InwardNormals, Settings.ScaleMultiplier);
+	ABrush* Brush = CreateBrushFromFaces(World, Faces, InwardNormals, SideDataArray, Settings);
 	if (Brush)
 	{
 		Result.BrushesImported++;
-		return true;
+		return Brush;
 	}
 
 	Result.Warnings.Add(TEXT("Failed to create brush from faces."));
-	return false;
+	return nullptr;
 }
 
 // ---- Entity Import ----
@@ -462,12 +555,15 @@ bool FVMFImporter::ImportPointEntity(const FVMFKeyValues& EntityBlock, UWorld* W
 	{
 		Entity = World->SpawnActor<ASourceCTSpawn>(ASourceCTSpawn::StaticClass(), SpawnTransform, SpawnParams);
 	}
+	else if (ClassName.Equals(TEXT("info_player_spectator"), ESearchCase::IgnoreCase))
+	{
+		Entity = World->SpawnActor<ASourceSpectatorSpawn>(ASourceSpectatorSpawn::StaticClass(), SpawnTransform, SpawnParams);
+	}
 	else if (ClassName.Equals(TEXT("light"), ESearchCase::IgnoreCase))
 	{
 		ASourceLight* Light = World->SpawnActor<ASourceLight>(ASourceLight::StaticClass(), SpawnTransform, SpawnParams);
 		if (Light)
 		{
-			// Parse _light "r g b brightness"
 			for (const auto& KV : KeyValues)
 			{
 				if (KV.Key.Equals(TEXT("_light"), ESearchCase::IgnoreCase))
@@ -483,15 +579,103 @@ bool FVMFImporter::ImportPointEntity(const FVMFKeyValues& EntityBlock, UWorld* W
 						Light->Brightness = FCString::Atoi(*LightParts[3]);
 					}
 				}
+				else if (KV.Key.Equals(TEXT("style"), ESearchCase::IgnoreCase))
+				{
+					Light->Style = FCString::Atoi(*KV.Value);
+				}
 			}
 		}
 		Entity = Light;
+	}
+	else if (ClassName.Equals(TEXT("light_spot"), ESearchCase::IgnoreCase))
+	{
+		// Spawn as UE SpotLight for visual preview, plus a SourceGenericEntity for data
+		ASpotLight* SpotLight = World->SpawnActor<ASpotLight>(ASpotLight::StaticClass(), SpawnTransform, SpawnParams);
+		if (SpotLight)
+		{
+			for (const auto& KV : KeyValues)
+			{
+				if (KV.Key.Equals(TEXT("_light"), ESearchCase::IgnoreCase))
+				{
+					TArray<FString> LightParts;
+					KV.Value.ParseIntoArrayWS(LightParts);
+					if (LightParts.Num() >= 4)
+					{
+						float R = FCString::Atof(*LightParts[0]) / 255.0f;
+						float G = FCString::Atof(*LightParts[1]) / 255.0f;
+						float B = FCString::Atof(*LightParts[2]) / 255.0f;
+						float Brightness = FCString::Atof(*LightParts[3]);
+						SpotLight->SpotLightComponent->SetLightColor(FLinearColor(R, G, B));
+						SpotLight->SpotLightComponent->SetIntensity(Brightness * 10.0f);
+					}
+				}
+				else if (KV.Key.Equals(TEXT("_cone"), ESearchCase::IgnoreCase))
+				{
+					float ConeAngle = FCString::Atof(*KV.Value);
+					SpotLight->SpotLightComponent->SetOuterConeAngle(ConeAngle);
+				}
+				else if (KV.Key.Equals(TEXT("_inner_cone"), ESearchCase::IgnoreCase))
+				{
+					float InnerCone = FCString::Atof(*KV.Value);
+					SpotLight->SpotLightComponent->SetInnerConeAngle(InnerCone);
+				}
+			}
+			SpotLight->SetActorLabel(TargetName.IsEmpty() ? ClassName : TargetName);
+			SpotLight->Tags.Add(TEXT("source:light_spot"));
+			Result.EntitiesImported++;
+			return true;
+		}
+	}
+	else if (ClassName.Equals(TEXT("light_environment"), ESearchCase::IgnoreCase))
+	{
+		// Create a directional light for the sun, plus store as generic entity
+		ADirectionalLight* DirLight = World->SpawnActor<ADirectionalLight>(
+			ADirectionalLight::StaticClass(), SpawnTransform, SpawnParams);
+		if (DirLight)
+		{
+			for (const auto& KV : KeyValues)
+			{
+				if (KV.Key.Equals(TEXT("_light"), ESearchCase::IgnoreCase))
+				{
+					TArray<FString> LightParts;
+					KV.Value.ParseIntoArrayWS(LightParts);
+					if (LightParts.Num() >= 4)
+					{
+						float R = FCString::Atof(*LightParts[0]) / 255.0f;
+						float G = FCString::Atof(*LightParts[1]) / 255.0f;
+						float B = FCString::Atof(*LightParts[2]) / 255.0f;
+						float Brightness = FCString::Atof(*LightParts[3]);
+						DirLight->GetComponent()->SetLightColor(FLinearColor(R, G, B));
+						DirLight->GetComponent()->SetIntensity(Brightness * 0.5f);
+					}
+				}
+			}
+			DirLight->SetActorLabel(TargetName.IsEmpty() ? TEXT("light_environment") : TargetName);
+			DirLight->Tags.Add(TEXT("source:light_environment"));
+			Result.EntitiesImported++;
+			return true;
+		}
+	}
+	else if (ClassName.Equals(TEXT("env_cubemap"), ESearchCase::IgnoreCase))
+	{
+		// Create a UE reflection capture at the cubemap position
+		ASphereReflectionCapture* Capture = World->SpawnActor<ASphereReflectionCapture>(
+			ASphereReflectionCapture::StaticClass(), SpawnTransform, SpawnParams);
+		if (Capture)
+		{
+			Capture->SetActorLabel(TargetName.IsEmpty() ? TEXT("env_cubemap") : TargetName);
+			Capture->Tags.Add(TEXT("source:env_cubemap"));
+			Result.EntitiesImported++;
+			return true;
+		}
 	}
 	else if (ClassName.StartsWith(TEXT("prop_"), ESearchCase::IgnoreCase))
 	{
 		ASourceProp* Prop = World->SpawnActor<ASourceProp>(ASourceProp::StaticClass(), SpawnTransform, SpawnParams);
 		if (Prop)
 		{
+			// Override the default classname from constructor with the actual one
+			Prop->SourceClassname = ClassName;
 			for (const auto& KV : KeyValues)
 			{
 				if (KV.Key.Equals(TEXT("model"), ESearchCase::IgnoreCase))
@@ -503,6 +687,40 @@ bool FVMFImporter::ImportPointEntity(const FVMFKeyValues& EntityBlock, UWorld* W
 			}
 		}
 		Entity = Prop;
+	}
+	else if (ClassName.Equals(TEXT("env_sprite"), ESearchCase::IgnoreCase))
+	{
+		ASourceEnvSprite* Sprite = World->SpawnActor<ASourceEnvSprite>(
+			ASourceEnvSprite::StaticClass(), SpawnTransform, SpawnParams);
+		if (Sprite)
+		{
+			for (const auto& KV : KeyValues)
+			{
+				if (KV.Key.Equals(TEXT("model"), ESearchCase::IgnoreCase))
+					Sprite->SpriteModel = KV.Value;
+				else if (KV.Key.Equals(TEXT("rendermode"), ESearchCase::IgnoreCase))
+					Sprite->RenderMode = FCString::Atoi(*KV.Value);
+				else if (KV.Key.Equals(TEXT("scale"), ESearchCase::IgnoreCase))
+					Sprite->SourceSpriteScale = FCString::Atof(*KV.Value);
+			}
+		}
+		Entity = Sprite;
+	}
+	else if (ClassName.Equals(TEXT("env_soundscape"), ESearchCase::IgnoreCase))
+	{
+		ASourceSoundscape* Soundscape = World->SpawnActor<ASourceSoundscape>(
+			ASourceSoundscape::StaticClass(), SpawnTransform, SpawnParams);
+		if (Soundscape)
+		{
+			for (const auto& KV : KeyValues)
+			{
+				if (KV.Key.Equals(TEXT("soundscape"), ESearchCase::IgnoreCase))
+					Soundscape->SoundscapeName = KV.Value;
+				else if (KV.Key.Equals(TEXT("radius"), ESearchCase::IgnoreCase))
+					Soundscape->Radius = FCString::Atof(*KV.Value);
+			}
+		}
+		Entity = Soundscape;
 	}
 	else
 	{

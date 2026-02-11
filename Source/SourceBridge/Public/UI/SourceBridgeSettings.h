@@ -79,6 +79,20 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Skybox")
 	FString SkyName = TEXT("sky_day01_01");
 
+	// ---- Import Settings ----
+
+	/** Import brush geometry from VMF/BSP */
+	UPROPERTY(Config, EditAnywhere, Category = "Import")
+	bool bImportBrushes = true;
+
+	/** Import entities from VMF/BSP */
+	UPROPERTY(Config, EditAnywhere, Category = "Import")
+	bool bImportEntities = true;
+
+	/** Apply material names to imported brush faces */
+	UPROPERTY(Config, EditAnywhere, Category = "Import")
+	bool bImportMaterials = true;
+
 	/** Get the singleton settings instance. */
 	static USourceBridgeSettings* Get();
 };

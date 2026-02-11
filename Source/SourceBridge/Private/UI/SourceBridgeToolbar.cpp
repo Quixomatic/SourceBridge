@@ -382,7 +382,12 @@ void FSourceBridgeToolbar::OnImportVMF()
 	FScopedSlowTask SlowTask(1.0f, LOCTEXT("ImportingVMF", "Importing VMF..."));
 	SlowTask.MakeDialog();
 
+	USourceBridgeSettings* PluginSettings = USourceBridgeSettings::Get();
 	FVMFImportSettings Settings;
+	Settings.ScaleMultiplier = 1.0f / PluginSettings->ScaleOverride;
+	Settings.bImportBrushes = PluginSettings->bImportBrushes;
+	Settings.bImportEntities = PluginSettings->bImportEntities;
+	Settings.bImportMaterials = PluginSettings->bImportMaterials;
 	FVMFImportResult Result = FVMFImporter::ImportFile(OutFiles[0], World, Settings);
 
 	FString Msg = FString::Printf(TEXT("VMF Import Complete\n\nBrushes: %d\nEntities: %d"),
@@ -427,7 +432,12 @@ void FSourceBridgeToolbar::OnImportBSP()
 	FScopedSlowTask SlowTask(1.0f, LOCTEXT("ImportingBSP", "Decompiling and importing BSP..."));
 	SlowTask.MakeDialog();
 
+	USourceBridgeSettings* PluginSettings = USourceBridgeSettings::Get();
 	FVMFImportSettings Settings;
+	Settings.ScaleMultiplier = 1.0f / PluginSettings->ScaleOverride;
+	Settings.bImportBrushes = PluginSettings->bImportBrushes;
+	Settings.bImportEntities = PluginSettings->bImportEntities;
+	Settings.bImportMaterials = PluginSettings->bImportMaterials;
 	FVMFImportResult Result = FBSPImporter::ImportFile(OutFiles[0], World, Settings);
 
 	FString Msg = FString::Printf(TEXT("BSP Import Complete\n\nBrushes: %d\nEntities: %d"),
