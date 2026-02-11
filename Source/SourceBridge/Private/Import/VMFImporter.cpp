@@ -15,6 +15,8 @@
 #include "Engine/PointLight.h"
 #include "Engine/SpotLight.h"
 #include "Engine/SphereReflectionCapture.h"
+#include "Components/BrushComponent.h"
+#include "BSPOps.h"
 
 FVMFImportResult FVMFImporter::ImportFile(const FString& FilePath, UWorld* World,
 	const FVMFImportSettings& Settings)
@@ -118,6 +120,12 @@ FVMFImportResult FVMFImporter::ImportBlocks(const TArray<FVMFKeyValues>& Blocks,
 				ImportPointEntity(Block, World, Settings, Result);
 			}
 		}
+	}
+
+	// Rebuild BSP so imported brushes become visible geometry
+	if (Result.BrushesImported > 0 && GEditor)
+	{
+		GEditor->RebuildAlteredBSP();
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("VMFImporter: Imported %d brushes, %d entities (%d warnings)"),
@@ -423,6 +431,10 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 	}
 
 	Model->BuildBound();
+
+	// Link the brush component to the model and prepare for BSP
+	Brush->GetBrushComponent()->Brush = Model;
+	FBSPOps::csgPrepMovingBrush(Brush);
 
 	return Brush;
 }

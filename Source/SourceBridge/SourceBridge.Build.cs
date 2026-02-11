@@ -31,7 +31,8 @@ public class SourceBridge : ModuleRules
 			"AssetRegistry",
 			"WorkspaceMenuStructure",
 			"ApplicationCore",
-			"DesktopPlatform"
+			"DesktopPlatform",
+			"BSPUtils"
 		});
 	}
 }
