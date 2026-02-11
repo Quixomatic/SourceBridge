@@ -212,18 +212,48 @@ void FMaterialImporter::SetupGameSearchPaths(const FString& GameName)
 	}
 
 	// 4. Open VPK archives for stock game materials
+	//    Source engine search order (from gameinfo.txt):
+	//      - Game dir VPKs (cstrike/cstrike_pak)
+	//      - HL2 base VPKs (hl2/hl2_textures, hl2/hl2_misc) - tool textures live here!
+	//      - Platform VPKs (platform/platform_misc)
 	VPKArchives.Empty();
-	TArray<FString> VPKDirFiles;
-	IFileManager::Get().FindFiles(VPKDirFiles, *(GameDir / TEXT("*_dir.vpk")), true, false);
-	for (const FString& VPKFile : VPKDirFiles)
+
+	// Determine the engine root (parent of game dir, e.g., "Counter-Strike Source/")
+	FString EngineRoot = FPaths::GetPath(GameDir); // e.g., .../Counter-Strike Source
+
+	// Collect VPK search directories in priority order
+	TArray<FString> VPKSearchDirs;
+	VPKSearchDirs.Add(GameDir);                          // cstrike/
+	VPKSearchDirs.Add(EngineRoot / TEXT("hl2"));         // hl2/ (base content, tool textures)
+	VPKSearchDirs.Add(EngineRoot / TEXT("platform"));    // platform/
+
+	// Also add hl2 and platform as loose file search paths
+	FString HL2Dir = EngineRoot / TEXT("hl2");
+	if (FPaths::DirectoryExists(HL2Dir / TEXT("materials")))
 	{
-		FString FullPath = GameDir / VPKFile;
-		TSharedPtr<FVPKReader> Reader = MakeShared<FVPKReader>();
-		if (Reader->Open(FullPath))
+		AdditionalSearchPaths.Add(HL2Dir);
+		UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Added HL2 base materials path: %s"), *HL2Dir);
+	}
+
+	for (const FString& VPKDir : VPKSearchDirs)
+	{
+		if (!FPaths::DirectoryExists(VPKDir)) continue;
+
+		TArray<FString> VPKDirFiles;
+		IFileManager::Get().FindFiles(VPKDirFiles, *(VPKDir / TEXT("*_dir.vpk")), true, false);
+		for (const FString& VPKFile : VPKDirFiles)
 		{
-			UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Opened VPK: %s (%d entries)"),
-				*VPKFile, Reader->GetEntryCount());
-			VPKArchives.Add(Reader);
+			// Skip sound VPKs - they don't contain materials
+			if (VPKFile.Contains(TEXT("sound"))) continue;
+
+			FString FullPath = VPKDir / VPKFile;
+			TSharedPtr<FVPKReader> Reader = MakeShared<FVPKReader>();
+			if (Reader->Open(FullPath))
+			{
+				UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Opened VPK: %s (%d entries)"),
+					*FullPath, Reader->GetEntryCount());
+				VPKArchives.Add(Reader);
+			}
 		}
 	}
 
