@@ -6,6 +6,8 @@
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialExpressionConstant3Vector.h"
 #include "Materials/MaterialExpressionTextureSample.h"
+#include "Materials/MaterialExpressionTextureSampleParameter2D.h"
+#include "Materials/MaterialExpressionVectorParameter.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Misc/FileHelper.h"
 #include "UObject/ConstructorHelpers.h"
@@ -15,6 +17,8 @@ TMap<FString, UMaterialInterface*> FMaterialImporter::MaterialCache;
 TMap<FString, FString> FMaterialImporter::ReverseToolMappings;
 FString FMaterialImporter::AssetSearchPath;
 TArray<FString> FMaterialImporter::AdditionalSearchPaths;
+UMaterial* FMaterialImporter::TextureBaseMaterial = nullptr;
+UMaterial* FMaterialImporter::ColorBaseMaterial = nullptr;
 
 // ---- VMT Parsing ----
 
@@ -401,7 +405,7 @@ UMaterialInterface* FMaterialImporter::CreateMaterialFromVMT(const FString& Sour
 		{
 			UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Loaded VTF texture '%s' (%dx%d)"),
 				*BaseTexturePath, Texture->GetSizeX(), Texture->GetSizeY());
-			return CreateTexturedMaterial(Texture, SourceMaterialPath);
+			return CreateTexturedMID(Texture, SourceMaterialPath);
 		}
 	}
 
@@ -433,7 +437,7 @@ UMaterialInterface* FMaterialImporter::CreateMaterialFromVMT(const FString& Sour
 		Color = FLinearColor(0.1f, 0.3f, 0.7f);
 	}
 
-	return CreateColorMaterial(Color, SourceMaterialPath);
+	return CreateColorMID(Color, SourceMaterialPath);
 }
 
 UMaterialInterface* FMaterialImporter::CreatePlaceholderMaterial(const FString& SourceMaterialPath)
@@ -446,7 +450,7 @@ UMaterialInterface* FMaterialImporter::CreatePlaceholderMaterial(const FString& 
 	}
 
 	FLinearColor Color = ColorFromName(SourceMaterialPath);
-	return CreateColorMaterial(Color, SourceMaterialPath);
+	return CreateColorMID(Color, SourceMaterialPath);
 }
 
 UTexture2D* FMaterialImporter::FindAndLoadVTF(const FString& TexturePath)
@@ -504,47 +508,94 @@ UTexture2D* FMaterialImporter::FindAndLoadVTF(const FString& TexturePath)
 	return nullptr;
 }
 
-UMaterial* FMaterialImporter::CreateTexturedMaterial(UTexture2D* Texture, const FString& SourceMaterialPath)
+UMaterial* FMaterialImporter::GetOrCreateTextureBaseMaterial()
 {
-	FString SafeName = SourceMaterialPath.Replace(TEXT("/"), TEXT("_")).Replace(TEXT("\\"), TEXT("_"));
-	UMaterial* Mat = NewObject<UMaterial>(GetTransientPackage(),
-		FName(*FString::Printf(TEXT("M_Import_%s"), *SafeName)), RF_Transient);
+	if (TextureBaseMaterial && TextureBaseMaterial->IsValidLowLevel())
+	{
+		return TextureBaseMaterial;
+	}
 
-	UMaterialExpressionTextureSample* TexExpr = NewObject<UMaterialExpressionTextureSample>(Mat);
-	TexExpr->Texture = Texture;
-	TexExpr->SamplerType = SAMPLERTYPE_Color;
-	Mat->GetExpressionCollection().AddExpression(TexExpr);
-	Mat->GetEditorOnlyData()->BaseColor.Connect(0, TexExpr);
+	TextureBaseMaterial = NewObject<UMaterial>(GetTransientPackage(),
+		FName(TEXT("M_SourceBridge_TextureBase")), RF_Transient);
 
-	Mat->PreEditChange(nullptr);
-	Mat->PostEditChange();
+	UMaterialExpressionTextureSampleParameter2D* TexParam =
+		NewObject<UMaterialExpressionTextureSampleParameter2D>(TextureBaseMaterial);
+	TexParam->ParameterName = FName(TEXT("BaseTexture"));
+	TexParam->SamplerType = SAMPLERTYPE_Color;
+	TextureBaseMaterial->GetExpressionCollection().AddExpression(TexParam);
+	TextureBaseMaterial->GetEditorOnlyData()->BaseColor.Connect(0, TexParam);
 
-	return Mat;
+	TextureBaseMaterial->PreEditChange(nullptr);
+	TextureBaseMaterial->PostEditChange();
+
+	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Created shared texture base material"));
+	return TextureBaseMaterial;
 }
 
-UMaterial* FMaterialImporter::CreateColorMaterial(const FLinearColor& Color, const FString& SourceMaterialPath)
+UMaterial* FMaterialImporter::GetOrCreateColorBaseMaterial()
 {
+	if (ColorBaseMaterial && ColorBaseMaterial->IsValidLowLevel())
+	{
+		return ColorBaseMaterial;
+	}
+
+	ColorBaseMaterial = NewObject<UMaterial>(GetTransientPackage(),
+		FName(TEXT("M_SourceBridge_ColorBase")), RF_Transient);
+
+	UMaterialExpressionVectorParameter* ColorParam =
+		NewObject<UMaterialExpressionVectorParameter>(ColorBaseMaterial);
+	ColorParam->ParameterName = FName(TEXT("Color"));
+	ColorParam->DefaultValue = FLinearColor(0.5f, 0.5f, 0.5f);
+	ColorBaseMaterial->GetExpressionCollection().AddExpression(ColorParam);
+	ColorBaseMaterial->GetEditorOnlyData()->BaseColor.Connect(0, ColorParam);
+
+	ColorBaseMaterial->PreEditChange(nullptr);
+	ColorBaseMaterial->PostEditChange();
+
+	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Created shared color base material"));
+	return ColorBaseMaterial;
+}
+
+UMaterialInstanceDynamic* FMaterialImporter::CreateTexturedMID(UTexture2D* Texture, const FString& SourceMaterialPath)
+{
+	UMaterial* BaseMat = GetOrCreateTextureBaseMaterial();
+	if (!BaseMat) return nullptr;
+
 	FString SafeName = SourceMaterialPath.Replace(TEXT("/"), TEXT("_")).Replace(TEXT("\\"), TEXT("_"));
-	UMaterial* Mat = NewObject<UMaterial>(GetTransientPackage(),
-		FName(*FString::Printf(TEXT("M_Import_%s"), *SafeName)), RF_Transient);
+	UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(BaseMat, GetTransientPackage(),
+		FName(*FString::Printf(TEXT("MID_Tex_%s"), *SafeName)));
 
-	// Create a constant color expression and connect it to BaseColor
-	UMaterialExpressionConstant3Vector* ColorExpr = NewObject<UMaterialExpressionConstant3Vector>(Mat);
-	ColorExpr->Constant = Color;
-	Mat->GetExpressionCollection().AddExpression(ColorExpr);
-	Mat->GetEditorOnlyData()->BaseColor.Connect(0, ColorExpr);
+	if (MID)
+	{
+		MID->SetTextureParameterValue(FName(TEXT("BaseTexture")), Texture);
+	}
 
-	// Compile the material
-	Mat->PreEditChange(nullptr);
-	Mat->PostEditChange();
+	return MID;
+}
 
-	return Mat;
+UMaterialInstanceDynamic* FMaterialImporter::CreateColorMID(const FLinearColor& Color, const FString& SourceMaterialPath)
+{
+	UMaterial* BaseMat = GetOrCreateColorBaseMaterial();
+	if (!BaseMat) return nullptr;
+
+	FString SafeName = SourceMaterialPath.Replace(TEXT("/"), TEXT("_")).Replace(TEXT("\\"), TEXT("_"));
+	UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(BaseMat, GetTransientPackage(),
+		FName(*FString::Printf(TEXT("MID_Color_%s"), *SafeName)));
+
+	if (MID)
+	{
+		MID->SetVectorParameterValue(FName(TEXT("Color")), Color);
+	}
+
+	return MID;
 }
 
 void FMaterialImporter::ClearCache()
 {
 	MaterialCache.Empty();
 	AdditionalSearchPaths.Empty();
+	TextureBaseMaterial = nullptr;
+	ColorBaseMaterial = nullptr;
 }
 
 FLinearColor FMaterialImporter::ColorFromName(const FString& Name)

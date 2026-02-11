@@ -93,15 +93,25 @@ private:
 	/** Generate a deterministic color from a material name (for placeholders). */
 	static FLinearColor ColorFromName(const FString& Name);
 
-	/** Create a UMaterial with a Constant3Vector expression for the given color. */
-	static UMaterial* CreateColorMaterial(const FLinearColor& Color, const FString& SourceMaterialPath);
+	/** Get or create the shared base material with a TextureSampleParameter2D. */
+	static UMaterial* GetOrCreateTextureBaseMaterial();
 
-	/** Create a UMaterial with a TextureSample expression for an imported VTF texture. */
-	static UMaterial* CreateTexturedMaterial(UTexture2D* Texture, const FString& SourceMaterialPath);
+	/** Get or create the shared base material with a VectorParameter for color. */
+	static UMaterial* GetOrCreateColorBaseMaterial();
 
-	/** Find and load a VTF texture from the asset search path. */
+	/** Create a MID from the texture base material with the given texture. */
+	static UMaterialInstanceDynamic* CreateTexturedMID(UTexture2D* Texture, const FString& SourceMaterialPath);
+
+	/** Create a MID from the color base material with the given color. */
+	static UMaterialInstanceDynamic* CreateColorMID(const FLinearColor& Color, const FString& SourceMaterialPath);
+
+	/** Find and load a VTF texture from all search paths. */
 	static UTexture2D* FindAndLoadVTF(const FString& TexturePath);
 
 	/** Initialize reverse mappings if not already done. */
 	static void EnsureReverseToolMappings();
+
+	/** Shared base materials (created once, reused for all MIDs). */
+	static UMaterial* TextureBaseMaterial;
+	static UMaterial* ColorBaseMaterial;
 };
