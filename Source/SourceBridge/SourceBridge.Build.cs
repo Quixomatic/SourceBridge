@@ -32,7 +32,8 @@ public class SourceBridge : ModuleRules
 			"WorkspaceMenuStructure",
 			"ApplicationCore",
 			"DesktopPlatform",
-			"BSPUtils"
+			"BSPUtils",
+			"ProceduralMeshComponent"
 		});
 	}
 }

@@ -1,7 +1,10 @@
 #include "Import/BSPImporter.h"
 #include "Import/VMFImporter.h"
+#include "Import/MaterialImporter.h"
+#include "UI/SourceBridgeSettings.h"
 #include "Misc/Paths.h"
 #include "HAL/PlatformProcess.h"
+#include "HAL/PlatformFileManager.h"
 
 FVMFImportResult FBSPImporter::ImportFile(const FString& BSPPath, UWorld* World,
 	const FVMFImportSettings& Settings)
@@ -14,9 +17,20 @@ FVMFImportResult FBSPImporter::ImportFile(const FString& BSPPath, UWorld* World,
 		return Result;
 	}
 
-	// Decompile BSP → VMF
+	// Output to Saved/SourceBridge/Import/<mapname>/ (absolute path for external tools)
+	FString MapName = FPaths::GetBaseFilename(BSPPath);
+	FString OutputDir = FPaths::ConvertRelativePathToFull(
+		FPaths::ProjectSavedDir() / TEXT("SourceBridge") / TEXT("Import") / MapName);
+
+	// Create the output directory
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+	PlatformFile.CreateDirectoryTree(*OutputDir);
+
+	UE_LOG(LogTemp, Log, TEXT("BSPImporter: Import directory: %s"), *OutputDir);
+
+	// Decompile BSP → VMF + extract embedded assets
 	FString DecompileError;
-	FString VMFPath = DecompileBSP(BSPPath, DecompileError);
+	FString VMFPath = DecompileBSP(BSPPath, OutputDir, DecompileError);
 
 	if (VMFPath.IsEmpty())
 	{
@@ -26,8 +40,43 @@ FVMFImportResult FBSPImporter::ImportFile(const FString& BSPPath, UWorld* World,
 
 	UE_LOG(LogTemp, Log, TEXT("BSPImporter: Decompiled '%s' → '%s'"), *BSPPath, *VMFPath);
 
-	// Import the decompiled VMF
-	Result = FVMFImporter::ImportFile(VMFPath, World, Settings);
+	// BSPSource --unpack_embedded extracts files into a nested subdirectory:
+	//   <OutputDir>/<mapname>/materials/  (not <OutputDir>/materials/)
+	// Detect this and use the nested directory as the asset search path
+	FString AssetSearchDir = OutputDir;
+	FString NestedDir = OutputDir / MapName;
+	if (FPaths::DirectoryExists(NestedDir / TEXT("materials")))
+	{
+		AssetSearchDir = NestedDir;
+		UE_LOG(LogTemp, Log, TEXT("BSPImporter: Using nested asset directory: %s"), *AssetSearchDir);
+	}
+	else if (!FPaths::DirectoryExists(OutputDir / TEXT("materials")))
+	{
+		// Search for any materials/ directory under OutputDir
+		TArray<FString> SubDirs;
+		IFileManager::Get().FindFiles(SubDirs, *(OutputDir / TEXT("*")), false, true);
+		for (const FString& SubDir : SubDirs)
+		{
+			if (FPaths::DirectoryExists(OutputDir / SubDir / TEXT("materials")))
+			{
+				AssetSearchDir = OutputDir / SubDir;
+				UE_LOG(LogTemp, Log, TEXT("BSPImporter: Found assets in subdirectory: %s"), *AssetSearchDir);
+				break;
+			}
+		}
+	}
+
+	FMaterialImporter::SetAssetSearchPath(AssetSearchDir);
+
+	// Set up additional search paths from the game installation directory
+	// This finds materials in cstrike/materials/, cstrike/custom/*/materials/, etc.
+	FString TargetGame = USourceBridgeSettings::Get()->TargetGame;
+	FMaterialImporter::SetupGameSearchPaths(TargetGame);
+
+	// Import the decompiled VMF with asset search path
+	FVMFImportSettings ImportSettings = Settings;
+	ImportSettings.AssetSearchPath = AssetSearchDir;
+	Result = FVMFImporter::ImportFile(VMFPath, World, ImportSettings);
 
 	return Result;
 }
@@ -55,22 +104,29 @@ FString FBSPImporter::FindBSPSourceJavaPath()
 	return FString();
 }
 
-FString FBSPImporter::DecompileBSP(const FString& BSPPath, FString& OutError)
+FString FBSPImporter::DecompileBSP(const FString& BSPPath, const FString& OutputDir, FString& OutError)
 {
-	FString JavaPath = FindBSPSourceJavaPath();
+	FString JavaPath = FPaths::ConvertRelativePathToFull(FindBSPSourceJavaPath());
 	if (JavaPath.IsEmpty())
 	{
 		OutError = TEXT("BSPSource not found. Place it in Resources/tools/bspsrc/");
 		return FString();
 	}
 
-	// Output VMF goes next to the BSP with _decompiled suffix
-	FString VMFPath = FPaths::GetPath(BSPPath) / FPaths::GetBaseFilename(BSPPath) + TEXT("_decompiled.vmf");
+	// Convert BSP path to absolute for external Java process
+	FString AbsBSPPath = FPaths::ConvertRelativePathToFull(BSPPath);
 
-	// Build command: java.exe -m info.ata4.bspsrc.app/info.ata4.bspsrc.app.src.BspSourceLauncher -o <vmf> <bsp>
+	// Output VMF goes in the import directory
+	// BSPSource's -o flag takes a FILE path for single BSP input, not a directory
+	FString MapName = FPaths::GetBaseFilename(BSPPath);
+	FString VMFPath = OutputDir / MapName + TEXT(".vmf");
+
+	// Build command with --unpack_embedded to extract materials/textures from BSP pakfile
+	// -o points to the output VMF file path (BSPSource extracts embedded files relative to it)
+	// All paths must be absolute since BSPSource runs as an external process
 	FString Args = FString::Printf(
-		TEXT("-m info.ata4.bspsrc.app/info.ata4.bspsrc.app.src.BspSourceLauncher -o \"%s\" \"%s\""),
-		*VMFPath, *BSPPath);
+		TEXT("-m info.ata4.bspsrc.app/info.ata4.bspsrc.app.src.BspSourceLauncher --unpack_embedded -o \"%s\" \"%s\""),
+		*VMFPath, *AbsBSPPath);
 
 	UE_LOG(LogTemp, Log, TEXT("BSPImporter: Running '%s' %s"), *JavaPath, *Args);
 
@@ -81,6 +137,16 @@ FString FBSPImporter::DecompileBSP(const FString& BSPPath, FString& OutError)
 
 	FPlatformProcess::ExecProcess(*JavaPath, *Args, &ReturnCode, &StdOut, &StdErr);
 
+	UE_LOG(LogTemp, Log, TEXT("BSPImporter: BSPSource exit code: %d"), ReturnCode);
+	if (!StdOut.IsEmpty())
+	{
+		UE_LOG(LogTemp, Log, TEXT("BSPImporter: stdout: %s"), *StdOut.Left(2000));
+	}
+	if (!StdErr.IsEmpty())
+	{
+		UE_LOG(LogTemp, Log, TEXT("BSPImporter: stderr: %s"), *StdErr.Left(2000));
+	}
+
 	if (ReturnCode != 0)
 	{
 		OutError = FString::Printf(TEXT("BSPSource exited with code %d. Output: %s %s"),
@@ -88,11 +154,50 @@ FString FBSPImporter::DecompileBSP(const FString& BSPPath, FString& OutError)
 		return FString();
 	}
 
+	// BSPSource sometimes returns exit code 0 even on failure - check stdout for errors
+	if (StdOut.Contains(TEXT("ERROR")) && StdOut.Contains(TEXT("Failed")))
+	{
+		OutError = FString::Printf(TEXT("BSPSource reported error: %s"), *StdOut.Left(500));
+		// Don't return yet - the embedded files may have been extracted even if decompile failed
+		// We'll check for the VMF below
+	}
+
+	// BSPSource with -o <dir> puts the VMF as <dir>/<mapname>.vmf
+	// But it might also use _d suffix or the original filename - check both
 	if (!FPaths::FileExists(VMFPath))
 	{
-		OutError = FString::Printf(TEXT("BSPSource ran but output VMF not found at: %s"), *VMFPath);
-		return FString();
+		// Try with _d suffix (BSPSource sometimes appends this)
+		FString AltPath = OutputDir / MapName + TEXT("_d.vmf");
+		if (FPaths::FileExists(AltPath))
+		{
+			VMFPath = AltPath;
+		}
+		else
+		{
+			// Search for any .vmf file in the output directory
+			TArray<FString> FoundFiles;
+			IFileManager::Get().FindFiles(FoundFiles, *(OutputDir / TEXT("*.vmf")), true, false);
+			if (FoundFiles.Num() > 0)
+			{
+				VMFPath = OutputDir / FoundFiles[0];
+				UE_LOG(LogTemp, Log, TEXT("BSPImporter: Found VMF at alternate path: %s"), *VMFPath);
+			}
+			else
+			{
+				OutError = FString::Printf(TEXT("BSPSource ran but no VMF found in: %s"), *OutputDir);
+				return FString();
+			}
+		}
 	}
+
+	// Log what was extracted
+	TArray<FString> ExtractedVMTs;
+	IFileManager::Get().FindFilesRecursive(ExtractedVMTs, *OutputDir, TEXT("*.vmt"), true, false);
+	TArray<FString> ExtractedVTFs;
+	IFileManager::Get().FindFilesRecursive(ExtractedVTFs, *OutputDir, TEXT("*.vtf"), true, false);
+
+	UE_LOG(LogTemp, Log, TEXT("BSPImporter: Extracted %d VMT files, %d VTF files to %s"),
+		ExtractedVMTs.Num(), ExtractedVTFs.Num(), *OutputDir);
 
 	return VMFPath;
 }

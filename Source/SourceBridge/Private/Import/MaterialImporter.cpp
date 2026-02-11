@@ -1,12 +1,20 @@
 #include "Import/MaterialImporter.h"
+#include "Import/VTFReader.h"
+#include "Compile/CompilePipeline.h"
+#include "Materials/Material.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialExpressionConstant3Vector.h"
+#include "Materials/MaterialExpressionTextureSample.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Misc/FileHelper.h"
 #include "UObject/ConstructorHelpers.h"
+#include "HAL/FileManager.h"
 
 TMap<FString, UMaterialInterface*> FMaterialImporter::MaterialCache;
 TMap<FString, FString> FMaterialImporter::ReverseToolMappings;
+FString FMaterialImporter::AssetSearchPath;
+TArray<FString> FMaterialImporter::AdditionalSearchPaths;
 
 // ---- VMT Parsing ----
 
@@ -139,6 +147,65 @@ FVMTParsedMaterial FMaterialImporter::ParseVMTFile(const FString& FilePath)
 	return FVMTParsedMaterial();
 }
 
+// ---- Asset Search Path ----
+
+void FMaterialImporter::SetAssetSearchPath(const FString& Path)
+{
+	AssetSearchPath = Path;
+	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Asset search path set to: %s"), *Path);
+}
+
+void FMaterialImporter::SetupGameSearchPaths(const FString& GameName)
+{
+	AdditionalSearchPaths.Empty();
+
+	FString GameDir = FCompilePipeline::FindGameDirectory(GameName);
+	if (GameDir.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("MaterialImporter: Could not find game directory for '%s'"), *GameName);
+		return;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Game directory: %s"), *GameDir);
+
+	// 1. Game's root directory (contains materials/ directly)
+	//    e.g., C:/Steam/steamapps/common/Counter-Strike Source/cstrike/
+	if (FPaths::DirectoryExists(GameDir / TEXT("materials")))
+	{
+		AdditionalSearchPaths.Add(GameDir);
+		UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Added game materials path: %s"), *GameDir);
+	}
+
+	// 2. Game's custom/ folder - each subfolder can have its own materials/
+	//    e.g., cstrike/custom/my_content/materials/
+	FString CustomDir = GameDir / TEXT("custom");
+	if (FPaths::DirectoryExists(CustomDir))
+	{
+		TArray<FString> CustomSubDirs;
+		IFileManager::Get().FindFiles(CustomSubDirs, *(CustomDir / TEXT("*")), false, true);
+		for (const FString& SubDir : CustomSubDirs)
+		{
+			FString SubDirFull = CustomDir / SubDir;
+			if (FPaths::DirectoryExists(SubDirFull / TEXT("materials")))
+			{
+				AdditionalSearchPaths.Add(SubDirFull);
+				UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Added custom materials path: %s"), *SubDirFull);
+			}
+		}
+	}
+
+	// 3. Download folder (community server content)
+	//    e.g., cstrike/download/materials/
+	FString DownloadDir = GameDir / TEXT("download");
+	if (FPaths::DirectoryExists(DownloadDir / TEXT("materials")))
+	{
+		AdditionalSearchPaths.Add(DownloadDir);
+		UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Added download materials path: %s"), *DownloadDir);
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: %d additional search paths configured"), AdditionalSearchPaths.Num());
+}
+
 // ---- Material Resolution ----
 
 void FMaterialImporter::EnsureReverseToolMappings()
@@ -175,10 +242,21 @@ UMaterialInterface* FMaterialImporter::ResolveSourceMaterial(const FString& Sour
 		return *Found;
 	}
 
-	// Try to find existing UE material
-	UMaterialInterface* Material = FindExistingMaterial(SourceMaterialPath);
+	UMaterialInterface* Material = nullptr;
 
-	// Create placeholder if not found
+	// 1. Try to create from extracted VMT file
+	if (!AssetSearchPath.IsEmpty())
+	{
+		Material = CreateMaterialFromVMT(SourceMaterialPath);
+	}
+
+	// 2. Try to find existing UE material in asset registry
+	if (!Material)
+	{
+		Material = FindExistingMaterial(SourceMaterialPath);
+	}
+
+	// 3. Create placeholder if not found
 	if (!Material)
 	{
 		Material = CreatePlaceholderMaterial(SourceMaterialPath);
@@ -187,6 +265,10 @@ UMaterialInterface* FMaterialImporter::ResolveSourceMaterial(const FString& Sour
 	if (Material)
 	{
 		MaterialCache.Add(NormalizedPath, Material);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("MaterialImporter: Failed to resolve material '%s'"), *SourceMaterialPath);
 	}
 
 	return Material;
@@ -216,10 +298,8 @@ UMaterialInterface* FMaterialImporter::FindExistingMaterial(const FString& Sourc
 	}
 
 	// 2. Try converting Source path to UE material name
-	// Source: "concrete/concretefloor001" → UE: "M_Concrete__Concretefloor001" or similar
 	FString Cleaned = SourceMaterialPath;
-	Cleaned = Cleaned.Replace(TEXT("/"), TEXT("__")); // path separators → double underscore
-	// Also try just the filename part
+	Cleaned = Cleaned.Replace(TEXT("/"), TEXT("__"));
 	FString FileName = FPaths::GetCleanFilename(SourceMaterialPath);
 
 	FAssetRegistryModule& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
@@ -229,7 +309,6 @@ UMaterialInterface* FMaterialImporter::FindExistingMaterial(const FString& Sourc
 	for (const FAssetData& Asset : Assets)
 	{
 		FString AssetName = Asset.AssetName.ToString();
-		// Check various naming patterns
 		if (AssetName.Equals(Cleaned, ESearchCase::IgnoreCase) ||
 			AssetName.Equals(TEXT("M_") + Cleaned, ESearchCase::IgnoreCase) ||
 			AssetName.Equals(TEXT("MI_") + Cleaned, ESearchCase::IgnoreCase) ||
@@ -243,43 +322,229 @@ UMaterialInterface* FMaterialImporter::FindExistingMaterial(const FString& Sourc
 	return nullptr;
 }
 
+UMaterialInterface* FMaterialImporter::CreateMaterialFromVMT(const FString& SourceMaterialPath)
+{
+	// Build the list of all directories to search: extracted first, then game dirs
+	TArray<FString> SearchRoots;
+	if (!AssetSearchPath.IsEmpty())
+	{
+		SearchRoots.Add(AssetSearchPath);
+	}
+	SearchRoots.Append(AdditionalSearchPaths);
+
+	if (SearchRoots.Num() == 0) return nullptr;
+
+	// Search for VMT file across all paths
+	FString VMTFullPath;
+	FString VMTRelPath = TEXT("materials") / SourceMaterialPath + TEXT(".vmt");
+
+	for (const FString& Root : SearchRoots)
+	{
+		// Direct path check
+		FString CandidatePath = Root / VMTRelPath;
+		CandidatePath = CandidatePath.Replace(TEXT("\\"), TEXT("/"));
+
+		if (FPaths::FileExists(CandidatePath))
+		{
+			VMTFullPath = CandidatePath;
+			break;
+		}
+
+		// Case-insensitive fallback
+		FString MaterialsDir = Root / TEXT("materials");
+		if (!FPaths::DirectoryExists(MaterialsDir)) continue;
+
+		FString SearchPath = SourceMaterialPath + TEXT(".vmt");
+		SearchPath = SearchPath.Replace(TEXT("\\"), TEXT("/"));
+
+		TArray<FString> AllVMTs;
+		IFileManager::Get().FindFilesRecursive(AllVMTs, *MaterialsDir, TEXT("*.vmt"), true, false);
+
+		for (const FString& FoundVMT : AllVMTs)
+		{
+			FString RelPath = FoundVMT;
+			FPaths::MakePathRelativeTo(RelPath, *(MaterialsDir + TEXT("/")));
+			RelPath = RelPath.Replace(TEXT("\\"), TEXT("/"));
+
+			if (RelPath.Equals(SearchPath, ESearchCase::IgnoreCase))
+			{
+				VMTFullPath = FoundVMT;
+				break;
+			}
+		}
+
+		if (!VMTFullPath.IsEmpty()) break;
+	}
+
+	if (VMTFullPath.IsEmpty())
+	{
+		return nullptr;
+	}
+
+	// Parse the VMT
+	FVMTParsedMaterial VMTData = ParseVMTFile(VMTFullPath);
+	if (VMTData.ShaderName.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("MaterialImporter: Failed to parse VMT: %s"), *VMTFullPath);
+		return nullptr;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Parsed VMT '%s' - shader: %s, basetexture: %s"),
+		*SourceMaterialPath, *VMTData.ShaderName, *VMTData.GetBaseTexture());
+
+	// Try to load the $basetexture as a VTF file
+	FString BaseTexturePath = VMTData.GetBaseTexture();
+	if (!BaseTexturePath.IsEmpty())
+	{
+		UTexture2D* Texture = FindAndLoadVTF(BaseTexturePath);
+		if (Texture)
+		{
+			UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Loaded VTF texture '%s' (%dx%d)"),
+				*BaseTexturePath, Texture->GetSizeX(), Texture->GetSizeY());
+			return CreateTexturedMaterial(Texture, SourceMaterialPath);
+		}
+	}
+
+	// Fallback: create a colored placeholder
+	FLinearColor Color = ColorFromName(SourceMaterialPath);
+
+	FString ColorStr = VMTData.Parameters.FindRef(TEXT("$color"));
+	if (ColorStr.IsEmpty()) ColorStr = VMTData.Parameters.FindRef(TEXT("$color2"));
+
+	if (!ColorStr.IsEmpty())
+	{
+		FString Clean = ColorStr.Replace(TEXT("["), TEXT("")).Replace(TEXT("]"), TEXT(""))
+			.Replace(TEXT("{"), TEXT("")).Replace(TEXT("}"), TEXT("")).TrimStartAndEnd();
+		TArray<FString> Parts;
+		Clean.ParseIntoArrayWS(Parts);
+		if (Parts.Num() >= 3)
+		{
+			float R = FCString::Atof(*Parts[0]);
+			float G = FCString::Atof(*Parts[1]);
+			float B = FCString::Atof(*Parts[2]);
+			if (R > 2.0f || G > 2.0f || B > 2.0f) { R /= 255.0f; G /= 255.0f; B /= 255.0f; }
+			Color = FLinearColor(R, G, B);
+		}
+	}
+
+	FString ShaderLower = VMTData.ShaderName.ToLower();
+	if (ShaderLower.Contains(TEXT("water")))
+	{
+		Color = FLinearColor(0.1f, 0.3f, 0.7f);
+	}
+
+	return CreateColorMaterial(Color, SourceMaterialPath);
+}
+
 UMaterialInterface* FMaterialImporter::CreatePlaceholderMaterial(const FString& SourceMaterialPath)
 {
-	// Skip creating placeholders for tool textures (they're invisible)
+	// Skip creating placeholders for tool textures (they're invisible in Source)
 	FString Upper = SourceMaterialPath.ToUpper();
 	if (Upper.StartsWith(TEXT("TOOLS/")))
 	{
 		return nullptr;
 	}
 
-	// Find the default engine material to use as a base
-	UMaterial* BaseMaterial = LoadObject<UMaterial>(nullptr,
-		TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
-	if (!BaseMaterial)
-	{
-		// Fallback to WorldGridMaterial
-		BaseMaterial = LoadObject<UMaterial>(nullptr,
-			TEXT("/Engine/EngineMaterials/WorldGridMaterial.WorldGridMaterial"));
-	}
-	if (!BaseMaterial) return nullptr;
+	FLinearColor Color = ColorFromName(SourceMaterialPath);
+	return CreateColorMaterial(Color, SourceMaterialPath);
+}
 
-	// Create dynamic material instance with a color derived from the name
+UTexture2D* FMaterialImporter::FindAndLoadVTF(const FString& TexturePath)
+{
+	if (TexturePath.IsEmpty()) return nullptr;
+
+	// Build the list of all directories to search: extracted first, then game dirs
+	TArray<FString> SearchRoots;
+	if (!AssetSearchPath.IsEmpty())
+	{
+		SearchRoots.Add(AssetSearchPath);
+	}
+	SearchRoots.Append(AdditionalSearchPaths);
+
+	FString VTFRelPath = TEXT("materials") / TexturePath + TEXT(".vtf");
+
+	for (const FString& Root : SearchRoots)
+	{
+		// Direct path check first
+		FString VTFFullPath = Root / VTFRelPath;
+		VTFFullPath = VTFFullPath.Replace(TEXT("\\"), TEXT("/"));
+
+		if (FPaths::FileExists(VTFFullPath))
+		{
+			UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Found VTF at: %s"), *VTFFullPath);
+			return FVTFReader::LoadVTF(VTFFullPath);
+		}
+
+		// Case-insensitive fallback search
+		FString MaterialsDir = Root / TEXT("materials");
+		if (!FPaths::DirectoryExists(MaterialsDir)) continue;
+
+		FString SearchPath = TexturePath + TEXT(".vtf");
+		SearchPath = SearchPath.Replace(TEXT("\\"), TEXT("/"));
+
+		TArray<FString> AllVTFs;
+		IFileManager::Get().FindFilesRecursive(AllVTFs, *MaterialsDir, TEXT("*.vtf"), true, false);
+
+		for (const FString& FoundVTF : AllVTFs)
+		{
+			FString RelPath = FoundVTF;
+			FPaths::MakePathRelativeTo(RelPath, *(MaterialsDir + TEXT("/")));
+			RelPath = RelPath.Replace(TEXT("\\"), TEXT("/"));
+
+			if (RelPath.Equals(SearchPath, ESearchCase::IgnoreCase))
+			{
+				UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Found VTF (case-insensitive) at: %s"), *FoundVTF);
+				return FVTFReader::LoadVTF(FoundVTF);
+			}
+		}
+	}
+
+	UE_LOG(LogTemp, Verbose, TEXT("MaterialImporter: VTF not found for '%s' (searched %d paths)"),
+		*TexturePath, SearchRoots.Num());
+	return nullptr;
+}
+
+UMaterial* FMaterialImporter::CreateTexturedMaterial(UTexture2D* Texture, const FString& SourceMaterialPath)
+{
 	FString SafeName = SourceMaterialPath.Replace(TEXT("/"), TEXT("_")).Replace(TEXT("\\"), TEXT("_"));
-	UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(BaseMaterial, GetTransientPackage(),
-		FName(*FString::Printf(TEXT("MI_Import_%s"), *SafeName)));
+	UMaterial* Mat = NewObject<UMaterial>(GetTransientPackage(),
+		FName(*FString::Printf(TEXT("M_Import_%s"), *SafeName)), RF_Transient);
 
-	if (MID)
-	{
-		FLinearColor Color = ColorFromName(SourceMaterialPath);
-		MID->SetVectorParameterValue(TEXT("Color"), Color);
-	}
+	UMaterialExpressionTextureSample* TexExpr = NewObject<UMaterialExpressionTextureSample>(Mat);
+	TexExpr->Texture = Texture;
+	TexExpr->SamplerType = SAMPLERTYPE_Color;
+	Mat->GetExpressionCollection().AddExpression(TexExpr);
+	Mat->GetEditorOnlyData()->BaseColor.Connect(0, TexExpr);
 
-	return MID;
+	Mat->PreEditChange(nullptr);
+	Mat->PostEditChange();
+
+	return Mat;
+}
+
+UMaterial* FMaterialImporter::CreateColorMaterial(const FLinearColor& Color, const FString& SourceMaterialPath)
+{
+	FString SafeName = SourceMaterialPath.Replace(TEXT("/"), TEXT("_")).Replace(TEXT("\\"), TEXT("_"));
+	UMaterial* Mat = NewObject<UMaterial>(GetTransientPackage(),
+		FName(*FString::Printf(TEXT("M_Import_%s"), *SafeName)), RF_Transient);
+
+	// Create a constant color expression and connect it to BaseColor
+	UMaterialExpressionConstant3Vector* ColorExpr = NewObject<UMaterialExpressionConstant3Vector>(Mat);
+	ColorExpr->Constant = Color;
+	Mat->GetExpressionCollection().AddExpression(ColorExpr);
+	Mat->GetEditorOnlyData()->BaseColor.Connect(0, ColorExpr);
+
+	// Compile the material
+	Mat->PreEditChange(nullptr);
+	Mat->PostEditChange();
+
+	return Mat;
 }
 
 void FMaterialImporter::ClearCache()
 {
 	MaterialCache.Empty();
+	AdditionalSearchPaths.Empty();
 }
 
 FLinearColor FMaterialImporter::ColorFromName(const FString& Name)

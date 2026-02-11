@@ -6,6 +6,10 @@
 /**
  * Imports Source BSP files by decompiling them with BSPSource, then
  * importing the resulting VMF via FVMFImporter.
+ *
+ * Output goes to Saved/SourceBridge/Import/<mapname>/ including:
+ * - Decompiled VMF file
+ * - Extracted materials (.vmt) and textures (.vtf) from BSP pakfile
  */
 class SOURCEBRIDGE_API FBSPImporter
 {
@@ -17,6 +21,12 @@ public:
 	/** Find the path to the bundled BSPSource java executable. */
 	static FString FindBSPSourceJavaPath();
 
-	/** Decompile a BSP to VMF using BSPSource. Returns the output VMF path. */
-	static FString DecompileBSP(const FString& BSPPath, FString& OutError);
+	/**
+	 * Decompile a BSP to VMF using BSPSource with asset extraction.
+	 * @param BSPPath Path to the input BSP file
+	 * @param OutputDir Directory for decompiled VMF and extracted assets
+	 * @param OutError Error message if decompilation fails
+	 * @return Path to the decompiled VMF file, or empty on failure
+	 */
+	static FString DecompileBSP(const FString& BSPPath, const FString& OutputDir, FString& OutError);
 };

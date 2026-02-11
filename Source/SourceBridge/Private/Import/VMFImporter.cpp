@@ -18,6 +18,8 @@
 #include "Materials/MaterialInterface.h"
 #include "Components/BrushComponent.h"
 #include "BSPOps.h"
+#include "EngineUtils.h"
+#include "ProceduralMeshComponent.h"
 
 FVMFImportResult FVMFImporter::ImportFile(const FString& FilePath, UWorld* World,
 	const FVMFImportSettings& Settings)
@@ -33,6 +35,7 @@ FVMFImportResult FVMFImporter::ImportFile(const FString& FilePath, UWorld* World
 	return ImportBlocks(Blocks, World, Settings);
 }
 
+
 FVMFImportResult FVMFImporter::ImportBlocks(const TArray<FVMFKeyValues>& Blocks, UWorld* World,
 	const FVMFImportSettings& Settings)
 {
@@ -46,6 +49,12 @@ FVMFImportResult FVMFImporter::ImportBlocks(const TArray<FVMFKeyValues>& Blocks,
 
 	// Clear material cache for fresh import
 	FMaterialImporter::ClearCache();
+
+	// Set asset search path if provided (e.g., from BSP import with extracted assets)
+	if (!Settings.AssetSearchPath.IsEmpty())
+	{
+		FMaterialImporter::SetAssetSearchPath(Settings.AssetSearchPath);
+	}
 
 	for (const FVMFKeyValues& Block : Blocks)
 	{
@@ -123,21 +132,10 @@ FVMFImportResult FVMFImporter::ImportBlocks(const TArray<FVMFKeyValues>& Blocks,
 		}
 	}
 
-	// Full CSG geometry rebuild so imported brushes become visible solid geometry
+	// Each brush has its own ProceduralMeshComponent for rendering, so no
+	// csgRebuild needed. Just redraw the viewports.
 	if (Result.BrushesImported > 0 && GEditor)
 	{
-		UE_LOG(LogTemp, Log, TEXT("VMFImporter: World model before csgRebuild - nodes: %d, surfs: %d, points: %d"),
-			World->GetModel()->Nodes.Num(), World->GetModel()->Surfs.Num(), World->GetModel()->Points.Num());
-
-		GEditor->csgRebuild(World);
-
-		// Update rendering components so BSP geometry is visible (not just collision)
-		World->InvalidateModelGeometry(World->GetCurrentLevel());
-		World->GetCurrentLevel()->UpdateModelComponents();
-
-		UE_LOG(LogTemp, Log, TEXT("VMFImporter: World model after csgRebuild - nodes: %d, surfs: %d, points: %d"),
-			World->GetModel()->Nodes.Num(), World->GetModel()->Surfs.Num(), World->GetModel()->Points.Num());
-
 		GEditor->RedrawLevelEditingViewports(true);
 	}
 
@@ -451,13 +449,84 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 
 	Model->BuildBound();
 
-	// Link the brush component to the model and prepare for BSP
+	// Link the brush component to the model
 	Brush->GetBrushComponent()->Brush = Model;
 	FBSPOps::csgPrepMovingBrush(Brush);
 
-	UE_LOG(LogTemp, Log, TEXT("VMFImporter: After prep - brush at (%f, %f, %f), model polys: %d, model nodes: %d"),
-		Brush->GetActorLocation().X, Brush->GetActorLocation().Y, Brush->GetActorLocation().Z,
-		Model->Polys->Element.Num(), Model->Nodes.Num());
+	// Build a ProceduralMeshComponent on this brush for solid rendering with materials.
+	// Each brush renders independently (like Hammer), no csgRebuild merge needed.
+	{
+		UProceduralMeshComponent* ProcMesh = NewObject<UProceduralMeshComponent>(Brush, TEXT("BrushMesh"));
+		ProcMesh->AttachToComponent(Brush->GetRootComponent(),
+			FAttachmentTransformRules::KeepRelativeTransform);
+		ProcMesh->SetRelativeTransform(FTransform::Identity);
+
+		// Group faces by material into mesh sections
+		TMap<UMaterialInterface*, int32> MatToSection;
+		struct FSectionData
+		{
+			TArray<FVector> Vertices;
+			TArray<int32> Triangles;
+			TArray<FVector> Normals;
+			TArray<FVector2D> UVs;
+		};
+		TArray<FSectionData> Sections;
+		TArray<UMaterialInterface*> SectionMaterials;
+
+		for (const FPoly& Poly : Model->Polys->Element)
+		{
+			if (Poly.Vertices.Num() < 3) continue;
+
+			UMaterialInterface* Mat = Poly.Material;
+			int32* SecIdx = MatToSection.Find(Mat);
+			if (!SecIdx)
+			{
+				int32 NewIdx = Sections.Num();
+				MatToSection.Add(Mat, NewIdx);
+				Sections.AddDefaulted();
+				SectionMaterials.Add(Mat);
+				SecIdx = &MatToSection[Mat];
+			}
+
+			FSectionData& Sec = Sections[*SecIdx];
+			int32 BaseVert = Sec.Vertices.Num();
+
+			for (const FVector3f& V : Poly.Vertices)
+			{
+				Sec.Vertices.Add(FVector(V));
+				Sec.Normals.Add(FVector(Poly.Normal));
+
+				// UV from poly texture vectors
+				FVector3f Rel = V - Poly.Base;
+				float U = Poly.TextureU.IsNearlyZero() ? 0.0f : FVector3f::DotProduct(Rel, Poly.TextureU);
+				float V2 = Poly.TextureV.IsNearlyZero() ? 0.0f : FVector3f::DotProduct(Rel, Poly.TextureV);
+				Sec.UVs.Add(FVector2D(U, V2));
+			}
+
+			// Fan triangulation
+			for (int32 i = 1; i < Poly.Vertices.Num() - 1; i++)
+			{
+				Sec.Triangles.Add(BaseVert);
+				Sec.Triangles.Add(BaseVert + i);
+				Sec.Triangles.Add(BaseVert + i + 1);
+			}
+		}
+
+		for (int32 i = 0; i < Sections.Num(); i++)
+		{
+			ProcMesh->CreateMeshSection_LinearColor(i,
+				Sections[i].Vertices, Sections[i].Triangles,
+				Sections[i].Normals, Sections[i].UVs,
+				TArray<FLinearColor>(), TArray<FProcMeshTangent>(), true);
+
+			if (SectionMaterials[i])
+			{
+				ProcMesh->SetMaterial(i, SectionMaterials[i]);
+			}
+		}
+
+		ProcMesh->RegisterComponent();
+	}
 
 	return Brush;
 }

@@ -36,6 +36,9 @@ struct FVMFImportSettings
 
 	/** Whether to apply material names to brush faces */
 	bool bImportMaterials = true;
+
+	/** Directory containing extracted assets (VMT/VTF files from BSP pakfile) */
+	FString AssetSearchPath;
 };
 
 struct FVMFImportResult
