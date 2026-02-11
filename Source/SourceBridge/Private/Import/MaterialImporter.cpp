@@ -498,11 +498,37 @@ UMaterialInterface* FMaterialImporter::CreateMaterialFromVMT(const FString& Sour
 
 UMaterialInterface* FMaterialImporter::CreatePlaceholderMaterial(const FString& SourceMaterialPath)
 {
-	// Skip creating placeholders for tool textures (they're invisible in Source)
 	FString Upper = SourceMaterialPath.ToUpper();
+
+	// Give tool textures distinctive colors so they're visible during editing
 	if (Upper.StartsWith(TEXT("TOOLS/")))
 	{
-		return nullptr;
+		FLinearColor Color;
+		if (Upper.Contains(TEXT("NODRAW")))
+			Color = FLinearColor(0.8f, 0.3f, 0.3f);  // Red-ish
+		else if (Upper.Contains(TEXT("TRIGGER")))
+			Color = FLinearColor(0.8f, 0.5f, 0.0f);   // Orange
+		else if (Upper.Contains(TEXT("CLIP")))
+			Color = FLinearColor(0.5f, 0.0f, 0.8f);   // Purple
+		else if (Upper.Contains(TEXT("INVISIBLE")))
+			Color = FLinearColor(0.3f, 0.3f, 0.8f);   // Blue-ish
+		else if (Upper.Contains(TEXT("SKYBOX")))
+			Color = FLinearColor(0.2f, 0.6f, 0.9f);   // Sky blue
+		else if (Upper.Contains(TEXT("HINT")))
+			Color = FLinearColor(0.9f, 0.9f, 0.0f);   // Yellow
+		else if (Upper.Contains(TEXT("SKIP")))
+			Color = FLinearColor(0.6f, 0.6f, 0.0f);   // Dark yellow
+		else if (Upper.Contains(TEXT("BLOCKLIGHT")))
+			Color = FLinearColor(0.1f, 0.1f, 0.1f);   // Near black
+		else if (Upper.Contains(TEXT("BLOCKLOS")))
+			Color = FLinearColor(0.5f, 0.2f, 0.0f);   // Brown
+		else if (Upper.Contains(TEXT("BLACK")))
+			Color = FLinearColor(0.02f, 0.02f, 0.02f); // Black
+		else if (Upper.Contains(TEXT("FOG")))
+			Color = FLinearColor(0.6f, 0.6f, 0.7f);   // Gray-blue
+		else
+			Color = ColorFromName(SourceMaterialPath);
+		return CreateColorMID(Color, SourceMaterialPath);
 	}
 
 	FLinearColor Color = ColorFromName(SourceMaterialPath);
