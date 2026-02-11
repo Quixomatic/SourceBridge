@@ -7,6 +7,9 @@
 #include "DetailWidgetRow.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Input/SComboBox.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SNumericEntryBox.h"
 #include "Modules/ModuleManager.h"
 
 #define LOCTEXT_NAMESPACE "SourceEntityDetail"
@@ -27,6 +30,8 @@ void FSourceEntityDetailCustomization::CustomizeDetails(IDetailLayoutBuilder& De
 	{
 		SourceActor = Cast<ASourceEntityActor>(SelectedObjects[0].Get());
 	}
+
+	CachedActor = SourceActor;
 
 	// Reorder categories: put Source Entity at the top
 	IDetailCategoryBuilder& SourceCategory = DetailBuilder.EditCategory(
@@ -85,11 +90,14 @@ void FSourceEntityDetailCustomization::CustomizeDetails(IDetailLayoutBuilder& De
 						SNew(STextBlock)
 						.Text(FText::Format(
 							LOCTEXT("FGDInfoValue", "{0} keyvalues, {1} inputs, {2} outputs"),
-							FText::AsNumber(Resolved.KeyValues.Num()),
+							FText::AsNumber(Resolved.Properties.Num()),
 							FText::AsNumber(Resolved.Inputs.Num()),
 							FText::AsNumber(Resolved.Outputs.Num())))
 						.Font(IDetailLayoutBuilder::GetDetailFont())
 					];
+
+				// Build dynamic property widgets from FGD
+				BuildFGDPropertyWidgets(DetailBuilder, SourceActor, Resolved);
 			}
 			else
 			{
@@ -133,6 +141,434 @@ void FSourceEntityDetailCustomization::CustomizeDetails(IDetailLayoutBuilder& De
 	DetailBuilder.EditCategory(TEXT("Source Soundscape"), FText::GetEmpty(), ECategoryPriority::TypeSpecific);
 	DetailBuilder.EditCategory(TEXT("Source Soccer"), FText::GetEmpty(), ECategoryPriority::TypeSpecific);
 	DetailBuilder.EditCategory(TEXT("Source Camera"), FText::GetEmpty(), ECategoryPriority::TypeSpecific);
+}
+
+void FSourceEntityDetailCustomization::BuildFGDPropertyWidgets(
+	IDetailLayoutBuilder& DetailBuilder,
+	ASourceEntityActor* Actor,
+	const FFGDEntityClass& Resolved)
+{
+	if (!Actor) return;
+
+	// Skip these keyvalues - they're handled by native UPROPERTYs
+	static const TSet<FString> SkipKeys = {
+		TEXT("origin"),
+		TEXT("angles"),
+		TEXT("targetname"),
+		TEXT("classname")
+	};
+
+	// Create a category for FGD-driven properties
+	IDetailCategoryBuilder& FGDCategory = DetailBuilder.EditCategory(
+		TEXT("FGD Properties"),
+		LOCTEXT("FGDPropertiesCategory", "FGD Properties"),
+		ECategoryPriority::Default);
+
+	TWeakObjectPtr<ASourceEntityActor> WeakActor = Actor;
+
+	for (const FFGDProperty& Prop : Resolved.Properties)
+	{
+		// Skip properties handled natively
+		if (SkipKeys.Contains(Prop.Name.ToLower()))
+		{
+			continue;
+		}
+
+		// Spawnflags get special handling
+		if (Prop.Type == EFGDPropertyType::Flags)
+		{
+			// Add a sub-header for spawnflags
+			FGDCategory.AddCustomRow(LOCTEXT("SpawnflagsHeader", "Spawnflags"))
+				.WholeRowContent()
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("SpawnflagsLabel", "Spawnflags"))
+					.Font(IDetailLayoutBuilder::GetDetailFontBold())
+				];
+
+			// Add a checkbox for each flag bit
+			for (const FFGDFlag& Flag : Prop.Flags)
+			{
+				int32 FlagBit = Flag.Bit;
+				FString FlagName = Flag.DisplayName;
+
+				FGDCategory.AddCustomRow(FText::FromString(FlagName))
+					.NameContent()
+					[
+						SNew(STextBlock)
+						.Text(FText::FromString(FlagName))
+						.Font(IDetailLayoutBuilder::GetDetailFont())
+						.ToolTipText(FText::Format(
+							LOCTEXT("FlagBitTooltip", "Spawnflag bit {0}"),
+							FText::AsNumber(FlagBit)))
+					]
+					.ValueContent()
+					[
+						SNew(SCheckBox)
+						.IsChecked_Lambda([WeakActor, FlagBit]() -> ECheckBoxState
+						{
+							if (ASourceEntityActor* A = WeakActor.Get())
+							{
+								return (A->SpawnFlags & FlagBit) ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+							}
+							return ECheckBoxState::Unchecked;
+						})
+						.OnCheckStateChanged_Lambda([WeakActor, FlagBit](ECheckBoxState NewState)
+						{
+							if (ASourceEntityActor* A = WeakActor.Get())
+							{
+								A->Modify();
+								if (NewState == ECheckBoxState::Checked)
+								{
+									A->SpawnFlags |= FlagBit;
+								}
+								else
+								{
+									A->SpawnFlags &= ~FlagBit;
+								}
+							}
+						})
+					];
+			}
+			continue;
+		}
+
+		// Determine display name
+		FString DisplayName = Prop.DisplayName.IsEmpty() ? Prop.Name : Prop.DisplayName;
+		FString KeyName = Prop.Name;
+
+		// Build tooltip from description + type info
+		FString Tooltip = Prop.Description;
+		if (Tooltip.IsEmpty())
+		{
+			Tooltip = FString::Printf(TEXT("Keyvalue: %s"), *KeyName);
+		}
+
+		if (Prop.Type == EFGDPropertyType::Choices && Prop.Choices.Num() > 0)
+		{
+			// --- Choices: SComboBox dropdown ---
+
+			// Build shared list of choice display strings for the combo source
+			TSharedPtr<TArray<TSharedPtr<FString>>> ChoiceItems = MakeShared<TArray<TSharedPtr<FString>>>();
+			for (const FFGDChoice& Choice : Prop.Choices)
+			{
+				ChoiceItems->Add(MakeShared<FString>(Choice.DisplayName));
+			}
+
+			// Capture choices array for value lookup
+			TArray<FFGDChoice> Choices = Prop.Choices;
+
+			// Find current selection index
+			FString CurrentValue = GetKeyValue(Actor, Prop);
+			int32 SelectedIndex = 0;
+			for (int32 i = 0; i < Choices.Num(); ++i)
+			{
+				if (Choices[i].Value == CurrentValue)
+				{
+					SelectedIndex = i;
+					break;
+				}
+			}
+
+			TSharedPtr<FString> InitialSelection;
+			if (ChoiceItems->IsValidIndex(SelectedIndex))
+			{
+				InitialSelection = (*ChoiceItems)[SelectedIndex];
+			}
+
+			FGDCategory.AddCustomRow(FText::FromString(DisplayName))
+				.NameContent()
+				[
+					SNew(STextBlock)
+					.Text(FText::FromString(DisplayName))
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.ToolTipText(FText::FromString(Tooltip))
+				]
+				.ValueContent()
+				.MinDesiredWidth(200.0f)
+				[
+					SNew(SComboBox<TSharedPtr<FString>>)
+					.OptionsSource(ChoiceItems.Get())
+					.InitiallySelectedItem(InitialSelection)
+					.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget>
+					{
+						return SNew(STextBlock)
+							.Text(FText::FromString(*Item))
+							.Font(IDetailLayoutBuilder::GetDetailFont());
+					})
+					.OnSelectionChanged_Lambda([WeakActor, KeyName, Choices](
+						TSharedPtr<FString> Selected, ESelectInfo::Type)
+					{
+						if (!Selected.IsValid()) return;
+						if (ASourceEntityActor* A = WeakActor.Get())
+						{
+							// Find the value for this display name
+							for (const FFGDChoice& C : Choices)
+							{
+								if (C.DisplayName == *Selected)
+								{
+									SetKeyValue(A, KeyName, C.Value);
+									break;
+								}
+							}
+						}
+					})
+					[
+						SNew(STextBlock)
+						.Font(IDetailLayoutBuilder::GetDetailFont())
+						.Text_Lambda([WeakActor, KeyName, Choices]() -> FText
+						{
+							if (ASourceEntityActor* A = WeakActor.Get())
+							{
+								const FString* Val = A->KeyValues.Find(KeyName);
+								if (Val)
+								{
+									for (const FFGDChoice& C : Choices)
+									{
+										if (C.Value == *Val)
+										{
+											return FText::FromString(C.DisplayName);
+										}
+									}
+									return FText::FromString(*Val);
+								}
+							}
+							// Show default
+							if (Choices.Num() > 0)
+							{
+								return FText::FromString(Choices[0].DisplayName);
+							}
+							return FText::GetEmpty();
+						})
+					]
+				];
+		}
+		else if (Prop.Type == EFGDPropertyType::Integer)
+		{
+			// --- Integer: numeric text box ---
+			FGDCategory.AddCustomRow(FText::FromString(DisplayName))
+				.NameContent()
+				[
+					SNew(STextBlock)
+					.Text(FText::FromString(DisplayName))
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.ToolTipText(FText::FromString(Tooltip))
+				]
+				.ValueContent()
+				[
+					SNew(SEditableTextBox)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.Text_Lambda([WeakActor, KeyName, Prop]() -> FText
+					{
+						if (ASourceEntityActor* A = WeakActor.Get())
+						{
+							const FString* Val = A->KeyValues.Find(KeyName);
+							if (Val) return FText::FromString(*Val);
+						}
+						return FText::FromString(Prop.DefaultValue);
+					})
+					.OnTextCommitted_Lambda([WeakActor, KeyName](const FText& NewText, ETextCommit::Type)
+					{
+						if (ASourceEntityActor* A = WeakActor.Get())
+						{
+							// Validate integer
+							FString Str = NewText.ToString().TrimStartAndEnd();
+							if (Str.IsNumeric() || (Str.StartsWith(TEXT("-")) && Str.Mid(1).IsNumeric()))
+							{
+								SetKeyValue(A, KeyName, Str);
+							}
+						}
+					})
+				];
+		}
+		else if (Prop.Type == EFGDPropertyType::Float)
+		{
+			// --- Float: numeric text box ---
+			FGDCategory.AddCustomRow(FText::FromString(DisplayName))
+				.NameContent()
+				[
+					SNew(STextBlock)
+					.Text(FText::FromString(DisplayName))
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.ToolTipText(FText::FromString(Tooltip))
+				]
+				.ValueContent()
+				[
+					SNew(SEditableTextBox)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.Text_Lambda([WeakActor, KeyName, Prop]() -> FText
+					{
+						if (ASourceEntityActor* A = WeakActor.Get())
+						{
+							const FString* Val = A->KeyValues.Find(KeyName);
+							if (Val) return FText::FromString(*Val);
+						}
+						return FText::FromString(Prop.DefaultValue);
+					})
+					.OnTextCommitted_Lambda([WeakActor, KeyName](const FText& NewText, ETextCommit::Type)
+					{
+						if (ASourceEntityActor* A = WeakActor.Get())
+						{
+							FString Str = NewText.ToString().TrimStartAndEnd();
+							if (FCString::Atof(*Str) != 0.0f || Str == TEXT("0") || Str == TEXT("0.0"))
+							{
+								SetKeyValue(A, KeyName, Str);
+							}
+						}
+					})
+				];
+		}
+		else if (Prop.Type == EFGDPropertyType::Color255)
+		{
+			// --- Color255: "R G B" text entry ---
+			FGDCategory.AddCustomRow(FText::FromString(DisplayName))
+				.NameContent()
+				[
+					SNew(STextBlock)
+					.Text(FText::FromString(DisplayName))
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.ToolTipText(FText::FromString(Tooltip + TEXT(" (R G B, 0-255)")))
+				]
+				.ValueContent()
+				[
+					SNew(SEditableTextBox)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.Text_Lambda([WeakActor, KeyName, Prop]() -> FText
+					{
+						if (ASourceEntityActor* A = WeakActor.Get())
+						{
+							const FString* Val = A->KeyValues.Find(KeyName);
+							if (Val) return FText::FromString(*Val);
+						}
+						return FText::FromString(Prop.DefaultValue.IsEmpty() ? TEXT("255 255 255") : Prop.DefaultValue);
+					})
+					.OnTextCommitted_Lambda([WeakActor, KeyName](const FText& NewText, ETextCommit::Type)
+					{
+						if (ASourceEntityActor* A = WeakActor.Get())
+						{
+							SetKeyValue(A, KeyName, NewText.ToString().TrimStartAndEnd());
+						}
+					})
+				];
+		}
+		else
+		{
+			// --- String/Studio/Sprite/Sound/TargetSource/TargetDestination/etc: text box ---
+			FGDCategory.AddCustomRow(FText::FromString(DisplayName))
+				.NameContent()
+				[
+					SNew(STextBlock)
+					.Text(FText::FromString(DisplayName))
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.ToolTipText(FText::FromString(Tooltip))
+				]
+				.ValueContent()
+				.MinDesiredWidth(200.0f)
+				[
+					SNew(SEditableTextBox)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.IsReadOnly(Prop.bReadOnly)
+					.Text_Lambda([WeakActor, KeyName, Prop]() -> FText
+					{
+						if (ASourceEntityActor* A = WeakActor.Get())
+						{
+							const FString* Val = A->KeyValues.Find(KeyName);
+							if (Val) return FText::FromString(*Val);
+						}
+						return FText::FromString(Prop.DefaultValue);
+					})
+					.OnTextCommitted_Lambda([WeakActor, KeyName](const FText& NewText, ETextCommit::Type)
+					{
+						if (ASourceEntityActor* A = WeakActor.Get())
+						{
+							SetKeyValue(A, KeyName, NewText.ToString());
+						}
+					})
+				];
+		}
+	}
+
+	// Add I/O info section if inputs/outputs exist
+	if (Resolved.Inputs.Num() > 0 || Resolved.Outputs.Num() > 0)
+	{
+		IDetailCategoryBuilder& IOCategory = DetailBuilder.EditCategory(
+			TEXT("FGD I/O Reference"),
+			LOCTEXT("FGDIOCategory", "FGD I/O Reference"),
+			ECategoryPriority::Default);
+
+		// List available inputs
+		if (Resolved.Inputs.Num() > 0)
+		{
+			FString InputList;
+			for (const FFGDIODef& Input : Resolved.Inputs)
+			{
+				if (!InputList.IsEmpty()) InputList += TEXT(", ");
+				InputList += Input.Name;
+			}
+
+			IOCategory.AddCustomRow(LOCTEXT("InputsRow", "Inputs"))
+				.NameContent()
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("InputsLabel", "Available Inputs"))
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+				]
+				.ValueContent()
+				.MinDesiredWidth(300.0f)
+				[
+					SNew(STextBlock)
+					.Text(FText::FromString(InputList))
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.AutoWrapText(true)
+				];
+		}
+
+		// List available outputs
+		if (Resolved.Outputs.Num() > 0)
+		{
+			FString OutputList;
+			for (const FFGDIODef& Output : Resolved.Outputs)
+			{
+				if (!OutputList.IsEmpty()) OutputList += TEXT(", ");
+				OutputList += Output.Name;
+			}
+
+			IOCategory.AddCustomRow(LOCTEXT("OutputsRow", "Outputs"))
+				.NameContent()
+				[
+					SNew(STextBlock)
+					.Text(LOCTEXT("OutputsLabel", "Available Outputs"))
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+				]
+				.ValueContent()
+				.MinDesiredWidth(300.0f)
+				[
+					SNew(STextBlock)
+					.Text(FText::FromString(OutputList))
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.AutoWrapText(true)
+				];
+		}
+	}
+}
+
+FString FSourceEntityDetailCustomization::GetKeyValue(ASourceEntityActor* Actor, const FFGDProperty& Prop)
+{
+	if (!Actor) return Prop.DefaultValue;
+
+	const FString* Value = Actor->KeyValues.Find(Prop.Name);
+	if (Value)
+	{
+		return *Value;
+	}
+	return Prop.DefaultValue;
+}
+
+void FSourceEntityDetailCustomization::SetKeyValue(ASourceEntityActor* Actor, const FString& Key, const FString& Value)
+{
+	if (!Actor) return;
+	Actor->Modify();
+	Actor->KeyValues.Add(Key, Value);
 }
 
 void FSourceEntityDetailCustomization::Register()
