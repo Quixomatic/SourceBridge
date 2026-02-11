@@ -517,11 +517,16 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 				TexSize = FMaterialImporter::GetTextureSize(Side->Material);
 			}
 
+			// Determine if Poly.Normal points outward (away from brush center).
+			// Brush vertices are in local space (center subtracted), so center = origin.
+			// For a convex solid, outward normal dot face position > 0.
+			bool bNormalPointsOutward = FVector::DotProduct(FVector(Poly.Normal), FVector(Poly.Base)) > 0.0f;
+			FVector OutwardNormal = bNormalPointsOutward ? FVector(Poly.Normal) : -FVector(Poly.Normal);
+
 			for (const FVector3f& V : Poly.Vertices)
 			{
 				Sec.Vertices.Add(FVector(V));
-				// VMF plane normals point inward; negate for outward-facing ProcMesh rendering
-				Sec.Normals.Add(-FVector(Poly.Normal));
+				Sec.Normals.Add(OutwardNormal);
 
 				if (Side)
 				{
@@ -544,12 +549,22 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 				}
 			}
 
-			// Fan triangulation - reverse winding so front face points outward
+			// Fan triangulation - winding depends on whether we need to flip
 			for (int32 i = 1; i < Poly.Vertices.Num() - 1; i++)
 			{
 				Sec.Triangles.Add(BaseVert);
-				Sec.Triangles.Add(BaseVert + i + 1);
-				Sec.Triangles.Add(BaseVert + i);
+				if (bNormalPointsOutward)
+				{
+					// Normal already outward: standard winding
+					Sec.Triangles.Add(BaseVert + i);
+					Sec.Triangles.Add(BaseVert + i + 1);
+				}
+				else
+				{
+					// Normal was inward: reverse winding to match flipped normal
+					Sec.Triangles.Add(BaseVert + i + 1);
+					Sec.Triangles.Add(BaseVert + i);
+				}
 			}
 		}
 
