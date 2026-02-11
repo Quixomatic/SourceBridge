@@ -28,7 +28,8 @@ public class SourceBridge : ModuleRules
 			"ToolMenus",
 			"InputCore",
 			"PropertyEditor",
-			"AssetRegistry"
+			"AssetRegistry",
+			"WorkspaceMenuStructure"
 		});
 	}
 }

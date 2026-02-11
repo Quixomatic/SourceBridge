@@ -9,6 +9,7 @@
 #include "Entities/FGDParser.h"
 #include "UI/SourceBridgeToolbar.h"
 #include "UI/SourceEntityDetailCustomization.h"
+#include "UI/SourceEntityPalette.h"
 #include "HAL/PlatformFilemanager.h"
 #include "Misc/FileHelper.h"
 #include "Engine/World.h"
@@ -32,9 +33,10 @@ void FSourceBridgeModule::LoadFGD(const FString& FilePath)
 
 void FSourceBridgeModule::StartupModule()
 {
-	// Register toolbar UI and detail customizations
+	// Register toolbar UI, detail customizations, and entity palette
 	FSourceBridgeToolbar::Register();
 	FSourceEntityDetailCustomization::Register();
+	FSourceEntityPaletteTab::Register();
 
 	ExportTestBoxRoomCommand = MakeShared<FAutoConsoleCommand>(
 		TEXT("SourceBridge.ExportTestBoxRoom"),
@@ -417,6 +419,7 @@ void FSourceBridgeModule::StartupModule()
 
 void FSourceBridgeModule::ShutdownModule()
 {
+	FSourceEntityPaletteTab::Unregister();
 	FSourceEntityDetailCustomization::Unregister();
 	FSourceBridgeToolbar::Unregister();
 

@@ -1,4 +1,5 @@
 #include "Actors/SourceEntityActor.h"
+#include "UI/SourceIOVisualizer.h"
 #include "Components/BillboardComponent.h"
 #include "Components/ArrowComponent.h"
 #include "Components/CapsuleComponent.h"
@@ -16,6 +17,13 @@ ASourceEntityActor::ASourceEntityActor()
 	{
 		Billboard->SetupAttachment(RootComponent);
 		Billboard->bIsScreenSizeScaled = true;
+	}
+
+	// I/O wire visualization (automatically draws connection lines in editor)
+	USourceIOVisualizer* IOVis = CreateEditorOnlyDefaultSubobject<USourceIOVisualizer>(TEXT("IOVisualizer"));
+	if (IOVis)
+	{
+		IOVis->SetIsVisualizationComponent(true);
 	}
 #endif
 }

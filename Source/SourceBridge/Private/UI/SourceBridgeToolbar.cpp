@@ -10,6 +10,7 @@
 #include "Misc/MessageDialog.h"
 #include "Misc/ScopedSlowTask.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/Docking/TabManager.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
 
@@ -60,6 +61,16 @@ void FSourceBridgeToolbar::Register()
 				);
 
 				MenuBuilder.AddSeparator();
+
+				MenuBuilder.AddMenuEntry(
+					LOCTEXT("EntityPalette", "Entity Palette"),
+					LOCTEXT("EntityPaletteTooltip", "Open the Source entity palette for browsing and spawning entities"),
+					FSlateIcon(),
+					FUIAction(FExecuteAction::CreateLambda([]()
+					{
+						FGlobalTabmanager::Get()->TryInvokeTab(FName(TEXT("SourceEntityPalette")));
+					}))
+				);
 
 				MenuBuilder.AddMenuEntry(
 					LOCTEXT("Settings", "Export Settings..."),
