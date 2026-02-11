@@ -3,6 +3,8 @@
 #include "Compile/CompilePipeline.h"
 #include "Models/SMDExporter.h"
 #include "Models/QCWriter.h"
+#include "Pipeline/FullExportPipeline.h"
+#include "Validation/ExportValidator.h"
 #include "HAL/PlatformFilemanager.h"
 #include "Misc/FileHelper.h"
 #include "Engine/World.h"
@@ -207,7 +209,74 @@ void FSourceBridgeModule::StartupModule()
 		})
 	);
 
-	UE_LOG(LogTemp, Log, TEXT("SourceBridge plugin loaded. Commands: SourceBridge.ExportScene, SourceBridge.ExportTestBoxRoom, SourceBridge.CompileMap, SourceBridge.ExportModel"));
+	FullExportCommand = MakeShared<FAutoConsoleCommand>(
+		TEXT("SourceBridge.FullExport"),
+		TEXT("Full pipeline: validate, export VMF, compile, copy to game. Usage: SourceBridge.FullExport [map_name] [game_name]"),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+			if (!World)
+			{
+				UE_LOG(LogTemp, Error, TEXT("SourceBridge: No editor world available."));
+				return;
+			}
+
+			FFullExportSettings Settings;
+			if (Args.Num() > 0) Settings.MapName = Args[0];
+			if (Args.Num() > 1) Settings.GameName = Args[1];
+
+			FFullExportResult Result = FFullExportPipeline::Run(World, Settings);
+
+			if (Result.bSuccess)
+			{
+				UE_LOG(LogTemp, Log, TEXT("SourceBridge: Full export succeeded!"));
+				UE_LOG(LogTemp, Log, TEXT("  VMF: %s"), *Result.VMFPath);
+				if (!Result.BSPPath.IsEmpty())
+				{
+					UE_LOG(LogTemp, Log, TEXT("  BSP: %s"), *Result.BSPPath);
+				}
+				UE_LOG(LogTemp, Log, TEXT("  Export: %.1fs, Compile: %.1fs"),
+					Result.ExportSeconds, Result.CompileSeconds);
+			}
+			else
+			{
+				UE_LOG(LogTemp, Error, TEXT("SourceBridge: Full export failed: %s"), *Result.ErrorMessage);
+			}
+
+			for (const FString& Warning : Result.Warnings)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("SourceBridge: %s"), *Warning);
+			}
+		})
+	);
+
+	ValidateCommand = MakeShared<FAutoConsoleCommand>(
+		TEXT("SourceBridge.Validate"),
+		TEXT("Run pre-export validation on the current scene."),
+		FConsoleCommandDelegate::CreateLambda([]()
+		{
+			UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+			if (!World)
+			{
+				UE_LOG(LogTemp, Error, TEXT("SourceBridge: No editor world available."));
+				return;
+			}
+
+			FValidationResult Result = FExportValidator::ValidateWorld(World);
+			Result.LogAll();
+
+			if (Result.HasErrors())
+			{
+				UE_LOG(LogTemp, Error, TEXT("SourceBridge: Validation FAILED - %d errors found."), Result.ErrorCount);
+			}
+			else
+			{
+				UE_LOG(LogTemp, Log, TEXT("SourceBridge: Validation PASSED (%d warnings)."), Result.WarningCount);
+			}
+		})
+	);
+
+	UE_LOG(LogTemp, Log, TEXT("SourceBridge plugin loaded. Commands: SourceBridge.ExportScene, SourceBridge.ExportTestBoxRoom, SourceBridge.CompileMap, SourceBridge.ExportModel, SourceBridge.FullExport, SourceBridge.Validate"));
 }
 
 void FSourceBridgeModule::ShutdownModule()
@@ -216,6 +285,8 @@ void FSourceBridgeModule::ShutdownModule()
 	ExportSceneCommand.Reset();
 	CompileMapCommand.Reset();
 	ExportModelCommand.Reset();
+	FullExportCommand.Reset();
+	ValidateCommand.Reset();
 }
 
 #undef LOCTEXT_NAMESPACE

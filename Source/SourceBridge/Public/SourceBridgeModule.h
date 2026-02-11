@@ -14,4 +14,6 @@ private:
 	TSharedPtr<class FAutoConsoleCommand> ExportSceneCommand;
 	TSharedPtr<class FAutoConsoleCommand> CompileMapCommand;
 	TSharedPtr<class FAutoConsoleCommand> ExportModelCommand;
+	TSharedPtr<class FAutoConsoleCommand> FullExportCommand;
+	TSharedPtr<class FAutoConsoleCommand> ValidateCommand;
 };
