@@ -520,7 +520,8 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 			for (const FVector3f& V : Poly.Vertices)
 			{
 				Sec.Vertices.Add(FVector(V));
-				Sec.Normals.Add(FVector(Poly.Normal));
+				// VMF plane normals point inward; negate for outward-facing ProcMesh rendering
+				Sec.Normals.Add(-FVector(Poly.Normal));
 
 				if (Side)
 				{
@@ -543,12 +544,12 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 				}
 			}
 
-			// Fan triangulation
+			// Fan triangulation - reverse winding so front face points outward
 			for (int32 i = 1; i < Poly.Vertices.Num() - 1; i++)
 			{
 				Sec.Triangles.Add(BaseVert);
-				Sec.Triangles.Add(BaseVert + i);
 				Sec.Triangles.Add(BaseVert + i + 1);
+				Sec.Triangles.Add(BaseVert + i);
 			}
 		}
 
