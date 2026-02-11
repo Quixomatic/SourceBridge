@@ -161,7 +161,7 @@ public:
 
 	/** Sprite scale. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Source Sprite")
-	float SpriteScale = 0.25f;
+	float SourceSpriteScale = 0.25f;
 };
 
 /**

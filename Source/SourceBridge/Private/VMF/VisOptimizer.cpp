@@ -183,8 +183,8 @@ TArray<FVMFKeyValues> FVisOptimizer::ExportHintBrushes(
 		FVector UEMin = Bounds.Origin - Bounds.BoxExtent;
 		FVector UEMax = Bounds.Origin + Bounds.BoxExtent;
 
-		FVector SourceMin = FSourceCoord::ConvertPosition(UEMin);
-		FVector SourceMax = FSourceCoord::ConvertPosition(UEMax);
+		FVector SourceMin = FSourceCoord::UEToSource(UEMin);
+		FVector SourceMax = FSourceCoord::UEToSource(UEMax);
 
 		// Ensure min < max after coordinate conversion (Y negation may swap)
 		FVector FinalMin(

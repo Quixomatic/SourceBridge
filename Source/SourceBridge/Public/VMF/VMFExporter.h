@@ -4,6 +4,7 @@
 #include "VMF/VMFKeyValues.h"
 
 class UWorld;
+class FMaterialMapper;
 
 /**
  * Builds and exports complete VMF documents.

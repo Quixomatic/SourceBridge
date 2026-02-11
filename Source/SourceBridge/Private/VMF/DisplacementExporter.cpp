@@ -284,8 +284,7 @@ void FDisplacementExporter::SampleLandscapeHeights(
 			int32 LandY = FMath::Clamp(FMath::RoundToInt(V * (CompSize - 1)), 0, CompSize - 1);
 
 			// Get world position from landscape data
-			FVector WorldPos;
-			DataInterface.GetWorldPositionTangentVectors(LandX, LandY, WorldPos);
+			FVector WorldPos = DataInterface.GetWorldVertex(LandX, LandY);
 
 			// Convert to Source coordinates
 			FVector SrcPos = FSourceCoord::UEToSource(WorldPos);

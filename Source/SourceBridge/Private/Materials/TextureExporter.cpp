@@ -53,9 +53,10 @@ bool FTextureExporter::ExportTextureToTGA(UTexture2D* Texture, const FString& Ou
 	{
 		FMemory::Memcpy(Pixels.GetData(), SourceData.GetData(), FMath::Min((int64)Pixels.Num() * 4, SourceData.Num()));
 	}
-	else if (SourceFormat == TSF_RGBA8)
+	else if (SourceFormat == TSF_RGBA8_DEPRECATED)
 	{
-		// Swap R and B channels
+		// Swap R and B channels (RGBA8 was deprecated in UE 5.7, converted to BGRA8 on load,
+		// but handle it here for safety)
 		const uint8* Src = SourceData.GetData();
 		for (int32 i = 0; i < Width * Height; i++)
 		{

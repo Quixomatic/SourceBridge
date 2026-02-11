@@ -1,11 +1,12 @@
 #include "Compile/CompileEstimator.h"
 #include "Engine/Brush.h"
+#include "Engine/Polys.h"
 #include "Engine/World.h"
 #include "Engine/PointLight.h"
 #include "Engine/SpotLight.h"
 #include "Engine/DirectionalLight.h"
 #include "Engine/StaticMeshActor.h"
-#include "Landscape/LandscapeProxy.h"
+#include "LandscapeProxy.h"
 #include "GameFramework/Volume.h"
 #include "EngineUtils.h"
 

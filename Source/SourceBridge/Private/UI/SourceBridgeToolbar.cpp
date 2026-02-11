@@ -28,7 +28,7 @@ void FSourceBridgeToolbar::Register()
 		Section.AddEntry(FToolMenuEntry::InitComboButton(
 			TEXT("SourceBridgeMenu"),
 			FUIAction(),
-			FOnGetContent::CreateLambda([](FMenuBuilder& MenuBuilder)
+			FNewMenuDelegate::CreateLambda([](FMenuBuilder& MenuBuilder)
 			{
 				MenuBuilder.AddMenuEntry(
 					LOCTEXT("ExportScene", "Export Scene to VMF"),

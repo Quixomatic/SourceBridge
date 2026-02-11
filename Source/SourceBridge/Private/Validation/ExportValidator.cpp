@@ -5,6 +5,7 @@
 #include "Materials/SurfaceProperties.h"
 #include "Engine/World.h"
 #include "Engine/Brush.h"
+#include "Engine/Polys.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/StaticMesh.h"
 #include "GameFramework/PlayerStart.h"

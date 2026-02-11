@@ -2,6 +2,7 @@
 #include "Materials/MaterialMapper.h"
 #include "Utilities/SourceCoord.h"
 #include "Engine/Brush.h"
+#include "Engine/Polys.h"
 #include "Model.h"
 
 FBrushConversionResult FBrushConverter::ConvertBrush(
@@ -23,7 +24,7 @@ FBrushConversionResult FBrushConverter::ConvertBrush(
 	}
 
 	// Check brush type - Source has no subtractive CSG
-	if (Brush->BrushType == EBrushType::Subtract)
+	if (Brush->BrushType == Brush_Subtract)
 	{
 		Result.Warnings.Add(FString::Printf(
 			TEXT("Brush '%s' is subtractive. Source engine does not support CSG subtraction. Skipping."),

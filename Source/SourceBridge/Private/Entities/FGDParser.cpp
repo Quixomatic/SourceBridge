@@ -139,13 +139,13 @@ TArray<FString> FFGDDatabase::ValidateEntity(
 	const FString& ClassName,
 	const TArray<TPair<FString, FString>>& KeyValues) const
 {
-	TArray<FString> Warnings;
+	TArray<FString> ValidationWarnings;
 
 	const FFGDEntityClass* Class = FindClass(ClassName);
 	if (!Class)
 	{
-		Warnings.Add(FString::Printf(TEXT("Unknown entity class '%s'. Not found in FGD."), *ClassName));
-		return Warnings;
+		ValidationWarnings.Add(FString::Printf(TEXT("Unknown entity class '%s'. Not found in FGD."), *ClassName));
+		return ValidationWarnings;
 	}
 
 	FFGDEntityClass Resolved = GetResolved(ClassName);
@@ -164,7 +164,7 @@ TArray<FString> FFGDDatabase::ValidateEntity(
 		const FFGDProperty* Prop = Resolved.FindProperty(KV.Key);
 		if (!Prop)
 		{
-			Warnings.Add(FString::Printf(
+			ValidationWarnings.Add(FString::Printf(
 				TEXT("Entity '%s': unknown keyvalue '%s'. Not defined in FGD."),
 				*ClassName, *KV.Key));
 		}
@@ -182,14 +182,14 @@ TArray<FString> FFGDDatabase::ValidateEntity(
 			}
 			if (!bFound)
 			{
-				Warnings.Add(FString::Printf(
+				ValidationWarnings.Add(FString::Printf(
 					TEXT("Entity '%s': keyvalue '%s' = '%s' is not a valid choice."),
 					*ClassName, *KV.Key, *KV.Value));
 			}
 		}
 	}
 
-	return Warnings;
+	return ValidationWarnings;
 }
 
 FString FFGDDatabase::ValidateIOConnection(

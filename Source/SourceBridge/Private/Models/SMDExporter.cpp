@@ -58,8 +58,7 @@ FSMDExportResult FSMDExporter::ExportStaticMesh(UStaticMesh* Mesh, float Scale)
 	for (const FPolygonID PolygonID : MeshDesc->Polygons().GetElementIDs())
 	{
 		// Get the polygon's triangle vertex instances
-		TArray<FTriangleID> TriangleIDs;
-		MeshDesc->GetPolygonTriangles(PolygonID, TriangleIDs);
+		TArrayView<const FTriangleID> TriangleIDs = MeshDesc->GetPolygonTriangles(PolygonID);
 
 		// Get material for this polygon
 		FPolygonGroupID GroupID = MeshDesc->GetPolygonPolygonGroup(PolygonID);
@@ -462,8 +461,7 @@ TArray<FSMDTriangle> FSMDExporter::ExtractCollisionMesh(UStaticMesh* Mesh, float
 			// Build index array from triangulated polygons
 			for (const FPolygonID PolygonID : MeshDesc->Polygons().GetElementIDs())
 			{
-				TArray<FTriangleID> TriangleIDs;
-				MeshDesc->GetPolygonTriangles(PolygonID, TriangleIDs);
+				TArrayView<const FTriangleID> TriangleIDs = MeshDesc->GetPolygonTriangles(PolygonID);
 
 				for (const FTriangleID TriangleID : TriangleIDs)
 				{

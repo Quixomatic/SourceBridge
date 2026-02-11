@@ -132,7 +132,7 @@ FEntityExportResult FEntityExporter::ExportEntities(UWorld* World)
 				Entity.AddKeyValue(TEXT("renderamt"), TEXT("255"));
 				Entity.AddKeyValue(TEXT("rendercolor"), FString::Printf(TEXT("%d %d %d"),
 					SpriteActor->RenderColor.R, SpriteActor->RenderColor.G, SpriteActor->RenderColor.B));
-				Entity.AddKeyValue(TEXT("scale"), SpriteActor->SpriteScale);
+				Entity.AddKeyValue(TEXT("scale"), SpriteActor->SourceSpriteScale);
 			}
 			else if (ASourceSoundscape* SoundActor = Cast<ASourceSoundscape>(SourceActor))
 			{
