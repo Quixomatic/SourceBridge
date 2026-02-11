@@ -1,0 +1,23 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "0.1.0",
+	"FriendlyName": "SourceBridge",
+	"Description": "Export Unreal Engine maps and assets to Source engine formats (VMF, MDL, VTF/VMT)",
+	"Category": "Editor",
+	"CreatedBy": "Quixomatic",
+	"CreatedByURL": "",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"CanContainContent": true,
+	"IsBetaVersion": true,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "SourceBridge",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	]
+}

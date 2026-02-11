@@ -1,0 +1,38 @@
+# Claude Code
+CLAUDE.md
+/.claude
+
+# Plans (local reference, not tracked)
+.plans/
+
+# UE generated
+Binaries/
+Intermediate/
+DerivedDataCache/
+Saved/
+Build/
+*.sln
+*.suo
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Compiled
+*.o
+*.obj
+*.pdb
+*.lib
+*.dll
+*.exe
+
+# Environment
+.env
+.env.local
