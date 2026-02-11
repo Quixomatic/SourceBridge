@@ -555,15 +555,15 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 				Sec.Triangles.Add(BaseVert);
 				if (bNormalPointsOutward)
 				{
-					// Normal already outward: standard winding
-					Sec.Triangles.Add(BaseVert + i);
+					// Normal outward: reverse winding for correct front-face
 					Sec.Triangles.Add(BaseVert + i + 1);
+					Sec.Triangles.Add(BaseVert + i);
 				}
 				else
 				{
-					// Normal was inward: reverse winding to match flipped normal
-					Sec.Triangles.Add(BaseVert + i + 1);
+					// Normal inward: standard winding produces outward front-face
 					Sec.Triangles.Add(BaseVert + i);
+					Sec.Triangles.Add(BaseVert + i + 1);
 				}
 			}
 		}
