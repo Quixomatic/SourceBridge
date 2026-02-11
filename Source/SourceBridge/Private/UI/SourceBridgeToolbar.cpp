@@ -73,6 +73,16 @@ void FSourceBridgeToolbar::Register()
 				);
 
 				MenuBuilder.AddMenuEntry(
+					LOCTEXT("VMFPreview", "VMF Preview"),
+					LOCTEXT("VMFPreviewTooltip", "Preview the VMF output with compile time estimates"),
+					FSlateIcon(),
+					FUIAction(FExecuteAction::CreateLambda([]()
+					{
+						FGlobalTabmanager::Get()->TryInvokeTab(FName(TEXT("VMFPreview")));
+					}))
+				);
+
+				MenuBuilder.AddMenuEntry(
 					LOCTEXT("Settings", "Export Settings..."),
 					LOCTEXT("SettingsTooltip", "Configure export settings (target game, output path, compile options)"),
 					FSlateIcon(),
