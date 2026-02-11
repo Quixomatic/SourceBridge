@@ -32,6 +32,9 @@ struct SOURCEBRIDGE_API FFullExportSettings
 
 	/** Run validation before export */
 	bool bValidate = true;
+
+	/** Create a distributable package folder with all game files */
+	bool bPackage = false;
 };
 
 /**
@@ -42,6 +45,7 @@ struct SOURCEBRIDGE_API FFullExportResult
 	bool bSuccess = false;
 	FString VMFPath;
 	FString BSPPath;
+	FString PackagePath;
 	int32 BrushCount = 0;
 	int32 EntityCount = 0;
 	double ExportSeconds = 0.0;

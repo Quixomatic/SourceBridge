@@ -237,6 +237,73 @@ FFullExportResult FFullExportPipeline::Run(UWorld* World, const FFullExportSetti
 		UE_LOG(LogTemp, Log, TEXT("SourceBridge: Compile completed in %.1f seconds."), Result.CompileSeconds);
 	}
 
+	// ---- Step 6: Package distributable ----
+	if (Settings.bPackage)
+	{
+		FString PackageDir = OutputDir / TEXT("package") / Settings.GameName;
+		FString PackageMaps = PackageDir / TEXT("maps");
+		FString PackageMaterials = PackageDir / TEXT("materials");
+		FString PackageModels = PackageDir / TEXT("models");
+
+		PlatformFile.CreateDirectoryTree(*PackageMaps);
+		PlatformFile.CreateDirectoryTree(*PackageMaterials);
+		PlatformFile.CreateDirectoryTree(*PackageModels);
+
+		// Copy BSP to package
+		if (!Result.BSPPath.IsEmpty() && PlatformFile.FileExists(*Result.BSPPath))
+		{
+			FString DestBSP = PackageMaps / FPaths::GetCleanFilename(Result.BSPPath);
+			PlatformFile.CopyFile(*DestBSP, *Result.BSPPath);
+		}
+
+		// Copy VMF source to package (for editing)
+		if (PlatformFile.FileExists(*Result.VMFPath))
+		{
+			FString DestVMF = PackageMaps / FPaths::GetCleanFilename(Result.VMFPath);
+			PlatformFile.CopyFile(*DestVMF, *Result.VMFPath);
+		}
+
+		// Copy materials from output to package
+		FString MatSourceDir = OutputDir / TEXT("materials");
+		if (PlatformFile.DirectoryExists(*MatSourceDir))
+		{
+			TArray<FString> MatFiles;
+			PlatformFile.FindFilesRecursively(MatFiles, *MatSourceDir, TEXT(""));
+			for (const FString& MatFile : MatFiles)
+			{
+				FString RelPath = MatFile;
+				FPaths::MakePathRelativeTo(RelPath, *(MatSourceDir + TEXT("/")));
+				FString DestPath = PackageMaterials / RelPath;
+				PlatformFile.CreateDirectoryTree(*FPaths::GetPath(DestPath));
+				PlatformFile.CopyFile(*DestPath, *MatFile);
+			}
+		}
+
+		// Copy models from output to package
+		FString ModelSourceDir = OutputDir / TEXT("models");
+		if (PlatformFile.DirectoryExists(*ModelSourceDir))
+		{
+			TArray<FString> ModelFiles;
+			PlatformFile.FindFilesRecursively(ModelFiles, *ModelSourceDir, TEXT(""));
+			for (const FString& ModelFile : ModelFiles)
+			{
+				// Only copy compiled model files (.mdl, .vtx, .vvd, .phy)
+				FString Ext = FPaths::GetExtension(ModelFile).ToLower();
+				if (Ext == TEXT("mdl") || Ext == TEXT("vtx") || Ext == TEXT("vvd") || Ext == TEXT("phy"))
+				{
+					FString RelPath = ModelFile;
+					FPaths::MakePathRelativeTo(RelPath, *(ModelSourceDir + TEXT("/")));
+					FString DestPath = PackageModels / RelPath;
+					PlatformFile.CreateDirectoryTree(*FPaths::GetPath(DestPath));
+					PlatformFile.CopyFile(*DestPath, *ModelFile);
+				}
+			}
+		}
+
+		Result.PackagePath = PackageDir;
+		UE_LOG(LogTemp, Log, TEXT("SourceBridge: Package created at %s"), *PackageDir);
+	}
+
 	Result.bSuccess = true;
 
 	double TotalTime = FPlatformTime::Seconds() - StartTime;

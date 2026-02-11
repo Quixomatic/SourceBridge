@@ -523,9 +523,13 @@ bool FEntityExporter::TryExportTriggerVolume(AActor* Actor, FEntityExportResult&
 
 bool FEntityExporter::TryExportWaterVolume(AActor* Actor, FEntityExportResult& Result)
 {
-	// Water volumes are detected by actor tag "water" or "water:material_name"
-	// They export as func_water_analog brush entities in Source
+	// Water volumes are detected by actor tags:
+	//   "water" - default cheap water with default material
+	//   "water:material_name" - cheap water with specified material
+	//   "water:cheap:material_name" - explicitly cheap water (scrolling texture)
+	//   "water:expensive:material_name" - expensive water (real-time reflections/refractions)
 	bool bIsWater = false;
+	bool bExpensiveWater = false;
 	FString WaterMaterial = TEXT("nature/water_canals01");
 
 	for (const FName& Tag : Actor->Tags)
@@ -535,6 +539,18 @@ bool FEntityExporter::TryExportWaterVolume(AActor* Actor, FEntityExportResult& R
 		if (TagStr.Equals(TEXT("water"), ESearchCase::IgnoreCase))
 		{
 			bIsWater = true;
+		}
+		else if (TagStr.StartsWith(TEXT("water:expensive:"), ESearchCase::IgnoreCase))
+		{
+			bIsWater = true;
+			bExpensiveWater = true;
+			WaterMaterial = TagStr.Mid(16);
+		}
+		else if (TagStr.StartsWith(TEXT("water:cheap:"), ESearchCase::IgnoreCase))
+		{
+			bIsWater = true;
+			bExpensiveWater = false;
+			WaterMaterial = TagStr.Mid(12);
 		}
 		else if (TagStr.StartsWith(TEXT("water:"), ESearchCase::IgnoreCase))
 		{
@@ -556,11 +572,12 @@ bool FEntityExporter::TryExportWaterVolume(AActor* Actor, FEntityExportResult& R
 	Entity.SourceActor = Actor;
 
 	// Water-specific keyvalues
-	Entity.AddKeyValue(TEXT("WaveHeight"), TEXT("3.0"));
+	Entity.AddKeyValue(TEXT("WaveHeight"), bExpensiveWater ? TEXT("3.0") : TEXT("1.0"));
 	Entity.AddKeyValue(TEXT("MoveDirIsLocal"), TEXT("0"));
 
-	// Store the water material path for brush face texturing
+	// Store internal metadata for brush face texturing and VMT generation
 	Entity.AddKeyValue(TEXT("_water_material"), WaterMaterial);
+	Entity.AddKeyValue(TEXT("_water_expensive"), bExpensiveWater ? TEXT("1") : TEXT("0"));
 
 	ParseActorTags(Actor, Entity);
 
