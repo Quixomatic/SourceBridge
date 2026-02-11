@@ -77,9 +77,18 @@ public:
 	/** Clear the material cache. Call when starting a new import. */
 	static void ClearCache();
 
+	/**
+	 * Get the texture dimensions for a Source material path.
+	 * Returns cached VTF dimensions, or (512,512) if unknown.
+	 */
+	static FIntPoint GetTextureSize(const FString& SourceMaterialPath);
+
 private:
 	/** Cache of resolved materials (Source path → UE material) */
 	static TMap<FString, UMaterialInterface*> MaterialCache;
+
+	/** Cache of texture dimensions (Source material path → width,height) */
+	static TMap<FString, FIntPoint> TextureSizeCache;
 
 	/** Reverse tool texture mapping (Source path → UE tool material name) */
 	static TMap<FString, FString> ReverseToolMappings;

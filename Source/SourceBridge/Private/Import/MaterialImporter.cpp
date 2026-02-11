@@ -15,6 +15,7 @@
 
 TMap<FString, UMaterialInterface*> FMaterialImporter::MaterialCache;
 TMap<FString, FString> FMaterialImporter::ReverseToolMappings;
+TMap<FString, FIntPoint> FMaterialImporter::TextureSizeCache;
 FString FMaterialImporter::AssetSearchPath;
 TArray<FString> FMaterialImporter::AdditionalSearchPaths;
 UMaterial* FMaterialImporter::TextureBaseMaterial = nullptr;
@@ -403,8 +404,14 @@ UMaterialInterface* FMaterialImporter::CreateMaterialFromVMT(const FString& Sour
 		UTexture2D* Texture = FindAndLoadVTF(BaseTexturePath);
 		if (Texture)
 		{
+			int32 TexW = Texture->GetSizeX();
+			int32 TexH = Texture->GetSizeY();
 			UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Loaded VTF texture '%s' (%dx%d)"),
-				*BaseTexturePath, Texture->GetSizeX(), Texture->GetSizeY());
+				*BaseTexturePath, TexW, TexH);
+
+			// Cache texture dimensions for UV normalization during import
+			TextureSizeCache.Add(SourceMaterialPath.ToUpper(), FIntPoint(TexW, TexH));
+
 			return CreateTexturedMID(Texture, SourceMaterialPath);
 		}
 	}
@@ -593,9 +600,20 @@ UMaterialInstanceDynamic* FMaterialImporter::CreateColorMID(const FLinearColor& 
 void FMaterialImporter::ClearCache()
 {
 	MaterialCache.Empty();
+	TextureSizeCache.Empty();
 	AdditionalSearchPaths.Empty();
 	TextureBaseMaterial = nullptr;
 	ColorBaseMaterial = nullptr;
+}
+
+FIntPoint FMaterialImporter::GetTextureSize(const FString& SourceMaterialPath)
+{
+	FString NormalizedPath = SourceMaterialPath.ToUpper();
+	if (const FIntPoint* Found = TextureSizeCache.Find(NormalizedPath))
+	{
+		return *Found;
+	}
+	return FIntPoint(512, 512); // Default assumption
 }
 
 FLinearColor FMaterialImporter::ColorFromName(const FString& Name)

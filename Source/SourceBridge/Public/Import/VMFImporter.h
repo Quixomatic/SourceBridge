@@ -85,9 +85,11 @@ private:
 	/**
 	 * Reconstruct face polygons from plane definitions using CSG clipping.
 	 * Returns arrays of vertex lists (one per face).
+	 * OutFaceToPlaneIdx maps each output face to its original plane/side index.
 	 */
 	static TArray<TArray<FVector>> ReconstructFacesFromPlanes(
-		const TArray<FPlane>& Planes, const TArray<FVector>& PlanePoints);
+		const TArray<FPlane>& Planes, const TArray<FVector>& PlanePoints,
+		TArray<int32>& OutFaceToPlaneIdx);
 
 	/** Clip a polygon against a plane, keeping the part on the positive side of the plane normal. */
 	static TArray<FVector> ClipPolygonByPlane(const TArray<FVector>& Polygon, const FPlane& Plane);
@@ -101,6 +103,7 @@ private:
 		const TArray<TArray<FVector>>& Faces,
 		const TArray<FVector>& FaceNormals,
 		const TArray<FVMFSideData>& SideData,
+		const TArray<int32>& FaceToSideMapping,
 		const FVMFImportSettings& Settings);
 
 	/** Import a worldspawn or entity solid block. Returns the created brush (or null). */

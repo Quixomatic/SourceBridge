@@ -309,9 +309,11 @@ TArray<FVector> FVMFImporter::ClipPolygonByPlane(const TArray<FVector>& Polygon,
 }
 
 TArray<TArray<FVector>> FVMFImporter::ReconstructFacesFromPlanes(
-	const TArray<FPlane>& Planes, const TArray<FVector>& PlanePoints)
+	const TArray<FPlane>& Planes, const TArray<FVector>& PlanePoints,
+	TArray<int32>& OutFaceToPlaneIdx)
 {
 	TArray<TArray<FVector>> Faces;
+	OutFaceToPlaneIdx.Empty();
 
 	for (int32 i = 0; i < Planes.Num(); i++)
 	{
@@ -329,6 +331,7 @@ TArray<TArray<FVector>> FVMFImporter::ReconstructFacesFromPlanes(
 		if (Polygon.Num() >= 3)
 		{
 			Faces.Add(MoveTemp(Polygon));
+			OutFaceToPlaneIdx.Add(i);
 		}
 	}
 
@@ -342,6 +345,7 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 	const TArray<TArray<FVector>>& Faces,
 	const TArray<FVector>& FaceNormals,
 	const TArray<FVMFSideData>& SideData,
+	const TArray<int32>& FaceToSideMapping,
 	const FVMFImportSettings& Settings)
 {
 	if (Faces.Num() < 4) return nullptr;
@@ -385,6 +389,9 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 	Model->Polys = NewObject<UPolys>(Model, NAME_None, RF_Transactional);
 	Brush->Brush = Model;
 
+	// Track which SideData index each successfully-added poly came from (for UV computation)
+	TArray<int32> PolyToSideIdx;
+
 	// Add faces as polys (matching UE's BrushBuilder pattern)
 	for (int32 FaceIdx = 0; FaceIdx < Faces.Num(); FaceIdx++)
 	{
@@ -405,10 +412,13 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 		// Base = first vertex (matches UE's BrushBuilder convention)
 		Poly.Base = Poly.Vertices[0];
 
+		// Map this face back to its original SideData via the face-to-plane mapping
+		int32 SideIdx = (FaceIdx < FaceToSideMapping.Num()) ? FaceToSideMapping[FaceIdx] : FaceIdx;
+
 		// Apply per-face data (material, UV axes)
-		if (FaceIdx < SideData.Num())
+		if (SideIdx < SideData.Num())
 		{
-			const FVMFSideData& Side = SideData[FaceIdx];
+			const FVMFSideData& Side = SideData[SideIdx];
 
 			// Material: resolve Source path to UE material interface
 			if (Settings.bImportMaterials && !Side.Material.IsEmpty())
@@ -440,6 +450,7 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 		if (Poly.Finalize(Brush, 1) == 0)
 		{
 			Model->Polys->Element.Add(MoveTemp(Poly));
+			PolyToSideIdx.Add(SideIdx);
 		}
 		else
 		{
@@ -473,8 +484,9 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 		TArray<FSectionData> Sections;
 		TArray<UMaterialInterface*> SectionMaterials;
 
-		for (const FPoly& Poly : Model->Polys->Element)
+		for (int32 PolyIdx = 0; PolyIdx < Model->Polys->Element.Num(); PolyIdx++)
 		{
+			const FPoly& Poly = Model->Polys->Element[PolyIdx];
 			if (Poly.Vertices.Num() < 3) continue;
 
 			UMaterialInterface* Mat = Poly.Material;
@@ -491,16 +503,44 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 			FSectionData& Sec = Sections[*SecIdx];
 			int32 BaseVert = Sec.Vertices.Num();
 
+			// Get the original Source UV data for this face
+			const FVMFSideData* Side = nullptr;
+			if (PolyIdx < PolyToSideIdx.Num() && PolyToSideIdx[PolyIdx] < SideData.Num())
+			{
+				Side = &SideData[PolyToSideIdx[PolyIdx]];
+			}
+
+			// Get texture dimensions for UV normalization
+			FIntPoint TexSize(512, 512);
+			if (Side && !Side->Material.IsEmpty())
+			{
+				TexSize = FMaterialImporter::GetTextureSize(Side->Material);
+			}
+
 			for (const FVector3f& V : Poly.Vertices)
 			{
 				Sec.Vertices.Add(FVector(V));
 				Sec.Normals.Add(FVector(Poly.Normal));
 
-				// UV from poly texture vectors
-				FVector3f Rel = V - Poly.Base;
-				float U = Poly.TextureU.IsNearlyZero() ? 0.0f : FVector3f::DotProduct(Rel, Poly.TextureU);
-				float V2 = Poly.TextureV.IsNearlyZero() ? 0.0f : FVector3f::DotProduct(Rel, Poly.TextureV);
-				Sec.UVs.Add(FVector2D(U, V2));
+				if (Side)
+				{
+					// Convert brush-local vertex back to Source world space for UV formula.
+					// V is in brush-local UE space. Add Center to get UE world space.
+					// Then reverse the SourceToUE conversion: divide by Scale, negate Y.
+					FVector UEWorld = FVector(V) + Center;
+					FVector SourcePos(UEWorld.X / Scale, -UEWorld.Y / Scale, UEWorld.Z / Scale);
+
+					// Source UV formula: u_texel = dot(pos, axis_dir) / scale + offset
+					float UTexel = FVector::DotProduct(SourcePos, Side->UAxis) / Side->UScale + Side->UOffset;
+					float VTexel = FVector::DotProduct(SourcePos, Side->VAxis) / Side->VScale + Side->VOffset;
+
+					// Normalize to 0-1 by dividing by texture dimensions
+					Sec.UVs.Add(FVector2D(UTexel / (float)TexSize.X, VTexel / (float)TexSize.Y));
+				}
+				else
+				{
+					Sec.UVs.Add(FVector2D(0.0f, 0.0f));
+				}
 			}
 
 			// Fan triangulation
@@ -597,7 +637,8 @@ ABrush* FVMFImporter::ImportSolid(const FVMFKeyValues& SolidBlock, UWorld* World
 	}
 
 	// Reconstruct face polygons via CSG clipping
-	TArray<TArray<FVector>> Faces = ReconstructFacesFromPlanes(Planes, PlaneFirstPoints);
+	TArray<int32> FaceToPlaneIdx;
+	TArray<TArray<FVector>> Faces = ReconstructFacesFromPlanes(Planes, PlaneFirstPoints, FaceToPlaneIdx);
 
 	if (Faces.Num() < 4)
 	{
@@ -605,7 +646,7 @@ ABrush* FVMFImporter::ImportSolid(const FVMFKeyValues& SolidBlock, UWorld* World
 		return nullptr;
 	}
 
-	ABrush* Brush = CreateBrushFromFaces(World, Faces, InwardNormals, SideDataArray, Settings);
+	ABrush* Brush = CreateBrushFromFaces(World, Faces, InwardNormals, SideDataArray, FaceToPlaneIdx, Settings);
 	if (Brush)
 	{
 		Result.BrushesImported++;
