@@ -319,6 +319,35 @@ FString FVMFExporter::GenerateBoxRoom()
 
 	Result += World.Serialize();
 
+	// Entities: player spawns + light
+	int32 EntityId = SolidId;  // continue IDs after solids
+
+	// T spawn
+	FVMFKeyValues TSpawn(TEXT("entity"));
+	TSpawn.AddProperty(TEXT("id"), EntityId++);
+	TSpawn.AddProperty(TEXT("classname"), TEXT("info_player_terrorist"));
+	TSpawn.AddProperty(TEXT("origin"), TEXT("0 -64 1"));
+	TSpawn.AddProperty(TEXT("angles"), TEXT("0 90 0"));
+	Result += TSpawn.Serialize();
+
+	// CT spawn
+	FVMFKeyValues CTSpawn(TEXT("entity"));
+	CTSpawn.AddProperty(TEXT("id"), EntityId++);
+	CTSpawn.AddProperty(TEXT("classname"), TEXT("info_player_counterterrorist"));
+	CTSpawn.AddProperty(TEXT("origin"), TEXT("0 64 1"));
+	CTSpawn.AddProperty(TEXT("angles"), TEXT("0 270 0"));
+	Result += CTSpawn.Serialize();
+
+	// Point light at center ceiling
+	FVMFKeyValues Light(TEXT("entity"));
+	Light.AddProperty(TEXT("id"), EntityId++);
+	Light.AddProperty(TEXT("classname"), TEXT("light"));
+	Light.AddProperty(TEXT("origin"), TEXT("0 0 200"));
+	Light.AddProperty(TEXT("_light"), TEXT("255 255 255 300"));
+	Light.AddProperty(TEXT("_quadratic_attn"), TEXT("1"));
+	Light.AddProperty(TEXT("style"), TEXT("0"));
+	Result += Light.Serialize();
+
 	// Footer blocks
 	Result += BuildCameras().Serialize();
 	Result += BuildCordon().Serialize();
