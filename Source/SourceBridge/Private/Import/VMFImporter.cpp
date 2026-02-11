@@ -126,7 +126,18 @@ FVMFImportResult FVMFImporter::ImportBlocks(const TArray<FVMFKeyValues>& Blocks,
 	// Full CSG geometry rebuild so imported brushes become visible solid geometry
 	if (Result.BrushesImported > 0 && GEditor)
 	{
+		UE_LOG(LogTemp, Log, TEXT("VMFImporter: World model before csgRebuild - nodes: %d, surfs: %d, points: %d"),
+			World->GetModel()->Nodes.Num(), World->GetModel()->Surfs.Num(), World->GetModel()->Points.Num());
+
 		GEditor->csgRebuild(World);
+
+		// Update rendering components so BSP geometry is visible (not just collision)
+		World->InvalidateModelGeometry(World->GetCurrentLevel());
+		World->GetCurrentLevel()->UpdateModelComponents();
+
+		UE_LOG(LogTemp, Log, TEXT("VMFImporter: World model after csgRebuild - nodes: %d, surfs: %d, points: %d"),
+			World->GetModel()->Nodes.Num(), World->GetModel()->Surfs.Num(), World->GetModel()->Points.Num());
+
 		GEditor->RedrawLevelEditingViewports(true);
 	}
 
@@ -353,25 +364,30 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 	if (TotalVerts == 0) return nullptr;
 	Center /= TotalVerts;
 
-	UE_LOG(LogTemp, Log, TEXT("VMFImporter: Creating brush at center (%f, %f, %f) with %d faces, %d verts"),
-		Center.X, Center.Y, Center.Z, Faces.Num(), TotalVerts);
-
-	// Spawn brush actor
+	// Spawn brush actor at computed center
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-	ABrush* Brush = World->SpawnActor<ABrush>(ABrush::StaticClass(), FTransform(Center), SpawnParams);
+	FTransform SpawnTransform;
+	SpawnTransform.SetLocation(Center);
+	ABrush* Brush = World->SpawnActor<ABrush>(ABrush::StaticClass(), SpawnTransform, SpawnParams);
 	if (!Brush) return nullptr;
 
+	// Force the actor position in case ABrush constructor reset it
+	Brush->SetActorLocation(Center);
 	Brush->BrushType = Brush_Add;
 	Brush->SetActorLabel(TEXT("ImportedBrush"));
 
+	UE_LOG(LogTemp, Log, TEXT("VMFImporter: Brush at (%f, %f, %f) with %d faces, %d verts"),
+		Brush->GetActorLocation().X, Brush->GetActorLocation().Y, Brush->GetActorLocation().Z,
+		Faces.Num(), TotalVerts);
+
 	// Create the model
 	UModel* Model = NewObject<UModel>(Brush, NAME_None, RF_Transactional);
-	Model->Initialize(Brush, true);
+	Model->Initialize(nullptr, true);
 	Model->Polys = NewObject<UPolys>(Model, NAME_None, RF_Transactional);
 	Brush->Brush = Model;
 
-	// Add faces as polys
+	// Add faces as polys (matching UE's BrushBuilder pattern)
 	for (int32 FaceIdx = 0; FaceIdx < Faces.Num(); FaceIdx++)
 	{
 		const TArray<FVector>& FaceVerts = Faces[FaceIdx];
@@ -379,6 +395,7 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 
 		FPoly Poly;
 		Poly.Init();
+		Poly.iLink = FaceIdx;
 
 		// Add vertices in local space (relative to brush center)
 		for (const FVector& V : FaceVerts)
@@ -387,18 +404,8 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 			Poly.Vertices.Add(FVector3f(UEPos - Center));
 		}
 
-		// Compute normal from vertices
-		if (FaceIdx < FaceNormals.Num())
-		{
-			// Reverse the inward VMF normal to get UE outward normal, and convert coords
-			FVector SourceNormal = FaceNormals[FaceIdx];
-			FVector UENormal(-SourceNormal.X, SourceNormal.Y, -SourceNormal.Z);
-			Poly.Normal = FVector3f(UENormal.GetSafeNormal());
-		}
-		else
-		{
-			Poly.CalcNormal();
-		}
+		// Base = first vertex (matches UE's BrushBuilder convention)
+		Poly.Base = Poly.Vertices[0];
 
 		// Apply per-face data (material, UV axes)
 		if (FaceIdx < SideData.Num())
@@ -417,13 +424,9 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 			}
 
 			// Texture axes: convert Source UV axes to UE FPoly texture vectors
-			// Source: U_texel = (Pos · UAxis) / UScale + UOffset
-			// UE FPoly: TextureU/TextureV define the texture projection direction
 			FVector UEUAxis = SourceDirToUE(Side.UAxis);
 			FVector UEVAxis = SourceDirToUE(Side.VAxis);
 
-			// TextureU/V magnitude = 1/scale (texels per world unit)
-			// Also divide by import scale since vertices are scaled
 			if (!FMath::IsNearlyZero(Side.UScale))
 			{
 				Poly.TextureU = FVector3f(UEUAxis / (Side.UScale * Scale));
@@ -432,12 +435,18 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 			{
 				Poly.TextureV = FVector3f(UEVAxis / (Side.VScale * Scale));
 			}
-
-			// Base point for texture offset
-			Poly.Base = Poly.Vertices.Num() > 0 ? Poly.Vertices[0] : FVector3f::ZeroVector;
 		}
 
-		Model->Polys->Element.Add(MoveTemp(Poly));
+		// Finalize: compute normal from vertex winding, validate polygon
+		// This is REQUIRED - UE's BrushBuilder always calls Finalize before adding polys
+		if (Poly.Finalize(Brush, 1) == 0)
+		{
+			Model->Polys->Element.Add(MoveTemp(Poly));
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("VMFImporter: Poly.Finalize failed for face %d"), FaceIdx);
+		}
 	}
 
 	Model->BuildBound();
@@ -445,6 +454,10 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 	// Link the brush component to the model and prepare for BSP
 	Brush->GetBrushComponent()->Brush = Model;
 	FBSPOps::csgPrepMovingBrush(Brush);
+
+	UE_LOG(LogTemp, Log, TEXT("VMFImporter: After prep - brush at (%f, %f, %f), model polys: %d, model nodes: %d"),
+		Brush->GetActorLocation().X, Brush->GetActorLocation().Y, Brush->GetActorLocation().Z,
+		Model->Polys->Element.Num(), Model->Nodes.Num());
 
 	return Brush;
 }
