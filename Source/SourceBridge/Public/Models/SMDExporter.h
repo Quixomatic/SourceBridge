@@ -6,6 +6,15 @@ class UStaticMesh;
 class USkeletalMesh;
 
 /**
+ * A bone weight pair for skeletal mesh vertices.
+ */
+struct FSMDBoneWeight
+{
+	int32 BoneIndex = 0;
+	float Weight = 1.0f;
+};
+
+/**
  * SMD vertex data for export.
  */
 struct FSMDVertex
@@ -14,6 +23,9 @@ struct FSMDVertex
 	FVector Position;
 	FVector Normal;
 	FVector2D UV;
+
+	/** Additional bone weights for skeletal meshes (SMD extended format). */
+	TArray<FSMDBoneWeight> BoneWeights;
 };
 
 /**
@@ -80,6 +92,11 @@ public:
 	static FSMDExportResult ExportStaticMesh(UStaticMesh* Mesh, float Scale = 0.525f);
 
 	/**
+	 * Export a USkeletalMesh to SMD format with bone hierarchy and weights.
+	 */
+	static FSMDExportResult ExportSkeletalMesh(USkeletalMesh* Mesh, float Scale = 0.525f);
+
+	/**
 	 * Build SMD text content from triangle data with a single root bone.
 	 */
 	static FString BuildSMD(const TArray<FSMDTriangle>& Triangles, const TArray<FSMDBone>& Bones);
@@ -98,4 +115,7 @@ private:
 
 	/** Get a clean material name from a UE material reference. */
 	static FString CleanMaterialName(const FString& MaterialPath);
+
+	/** Extract collision mesh triangles from a UStaticMesh's body setup. */
+	static TArray<FSMDTriangle> ExtractCollisionMesh(UStaticMesh* Mesh, float Scale);
 };

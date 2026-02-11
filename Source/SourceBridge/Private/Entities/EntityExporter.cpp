@@ -77,6 +77,30 @@ FEntityExportResult FEntityExporter::ExportEntities(UWorld* World)
 		}
 	}
 
+	// Validate I/O connections: warn about targets that don't exist
+	for (const FSourceEntity& Entity : Result.Entities)
+	{
+		for (const FEntityIOConnection& Conn : Entity.Connections)
+		{
+			if (!Conn.TargetEntity.IsEmpty() && !Result.TargetNames.Contains(Conn.TargetEntity))
+			{
+				// Check for special target names that Source resolves at runtime
+				if (Conn.TargetEntity != TEXT("!activator") &&
+					Conn.TargetEntity != TEXT("!caller") &&
+					Conn.TargetEntity != TEXT("!self") &&
+					Conn.TargetEntity != TEXT("!player") &&
+					!Conn.TargetEntity.StartsWith(TEXT("!")))
+				{
+					Result.Warnings.Add(FString::Printf(
+						TEXT("Entity '%s' (%s): I/O target '%s' not found in scene. Output '%s' -> '%s.%s' may be broken."),
+						*Entity.TargetName, *Entity.ClassName,
+						*Conn.TargetEntity, *Conn.OutputName,
+						*Conn.TargetEntity, *Conn.InputName));
+				}
+			}
+		}
+	}
+
 	return Result;
 }
 
