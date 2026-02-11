@@ -33,5 +33,7 @@ private:
 	static void OnFullExport();
 	static void OnValidate();
 	static void OnExportTestBoxRoom();
+	static void OnImportVMF();
+	static void OnImportBSP();
 	static void OnOpenSettings();
 };

@@ -28,4 +28,6 @@ private:
 	TSharedPtr<class FAutoConsoleCommand> LoadFGDCommand;
 	TSharedPtr<class FAutoConsoleCommand> ListEntitiesCommand;
 	TSharedPtr<class FAutoConsoleCommand> AnalyzeVisCommand;
+	TSharedPtr<class FAutoConsoleCommand> ImportVMFCommand;
+	TSharedPtr<class FAutoConsoleCommand> ImportBSPCommand;
 };

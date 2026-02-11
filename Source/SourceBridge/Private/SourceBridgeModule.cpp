@@ -7,6 +7,8 @@
 #include "Pipeline/FullExportPipeline.h"
 #include "Validation/ExportValidator.h"
 #include "Entities/FGDParser.h"
+#include "Import/VMFImporter.h"
+#include "Import/BSPImporter.h"
 #include "UI/SourceBridgeToolbar.h"
 #include "UI/SourceEntityDetailCustomization.h"
 #include "UI/SourceEntityPalette.h"
@@ -401,6 +403,68 @@ void FSourceBridgeModule::StartupModule()
 		})
 	);
 
+	ImportVMFCommand = MakeShared<FAutoConsoleCommand>(
+		TEXT("SourceBridge.ImportVMF"),
+		TEXT("Import a VMF file into the current level. Usage: SourceBridge.ImportVMF <vmf_path>"),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			if (Args.Num() < 1)
+			{
+				UE_LOG(LogTemp, Error, TEXT("SourceBridge: Usage: SourceBridge.ImportVMF <vmf_path>"));
+				return;
+			}
+
+			UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+			if (!World)
+			{
+				UE_LOG(LogTemp, Error, TEXT("SourceBridge: No editor world available."));
+				return;
+			}
+
+			FVMFImportSettings Settings;
+			FVMFImportResult Result = FVMFImporter::ImportFile(Args[0], World, Settings);
+
+			UE_LOG(LogTemp, Log, TEXT("SourceBridge: VMF import complete. %d brushes, %d entities."),
+				Result.BrushesImported, Result.EntitiesImported);
+
+			for (const FString& Warning : Result.Warnings)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("SourceBridge Import: %s"), *Warning);
+			}
+		})
+	);
+
+	ImportBSPCommand = MakeShared<FAutoConsoleCommand>(
+		TEXT("SourceBridge.ImportBSP"),
+		TEXT("Import a BSP file (decompiles via BSPSource, then imports VMF). Usage: SourceBridge.ImportBSP <bsp_path>"),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			if (Args.Num() < 1)
+			{
+				UE_LOG(LogTemp, Error, TEXT("SourceBridge: Usage: SourceBridge.ImportBSP <bsp_path>"));
+				return;
+			}
+
+			UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+			if (!World)
+			{
+				UE_LOG(LogTemp, Error, TEXT("SourceBridge: No editor world available."));
+				return;
+			}
+
+			FVMFImportSettings Settings;
+			FVMFImportResult Result = FBSPImporter::ImportFile(Args[0], World, Settings);
+
+			UE_LOG(LogTemp, Log, TEXT("SourceBridge: BSP import complete. %d brushes, %d entities."),
+				Result.BrushesImported, Result.EntitiesImported);
+
+			for (const FString& Warning : Result.Warnings)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("SourceBridge Import: %s"), *Warning);
+			}
+		})
+	);
+
 	// Auto-load FGD from Resources directory if present
 	FString PluginFGDPath = FPaths::ProjectPluginsDir() / TEXT("SourceBridge") / TEXT("Resources") / TEXT("cstrike.fgd");
 	if (!FPaths::FileExists(PluginFGDPath))
@@ -430,6 +494,8 @@ void FSourceBridgeModule::ShutdownModule()
 	LoadFGDCommand.Reset();
 	ListEntitiesCommand.Reset();
 	AnalyzeVisCommand.Reset();
+	ImportVMFCommand.Reset();
+	ImportBSPCommand.Reset();
 }
 
 #undef LOCTEXT_NAMESPACE

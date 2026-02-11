@@ -30,7 +30,8 @@ public class SourceBridge : ModuleRules
 			"PropertyEditor",
 			"AssetRegistry",
 			"WorkspaceMenuStructure",
-			"ApplicationCore"
+			"ApplicationCore",
+			"DesktopPlatform"
 		});
 	}
 }

@@ -3,6 +3,8 @@
 #include "VMF/VMFExporter.h"
 #include "Pipeline/FullExportPipeline.h"
 #include "Validation/ExportValidator.h"
+#include "Import/VMFImporter.h"
+#include "Import/BSPImporter.h"
 #include "ToolMenus.h"
 #include "Editor.h"
 #include "HAL/PlatformFilemanager.h"
@@ -13,6 +15,7 @@
 #include "Framework/Docking/TabManager.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "DesktopPlatformModule.h"
 
 #define LOCTEXT_NAMESPACE "SourceBridgeToolbar"
 
@@ -42,6 +45,22 @@ void FSourceBridgeToolbar::Register()
 					LOCTEXT("FullExportTooltip", "Export, validate, compile (vbsp/vvis/vrad), and copy to game"),
 					FSlateIcon(),
 					FUIAction(FExecuteAction::CreateStatic(&FSourceBridgeToolbar::OnFullExport))
+				);
+
+				MenuBuilder.AddSeparator();
+
+				MenuBuilder.AddMenuEntry(
+					LOCTEXT("ImportVMF", "Import VMF..."),
+					LOCTEXT("ImportVMFTooltip", "Import a Source VMF file into the current level"),
+					FSlateIcon(),
+					FUIAction(FExecuteAction::CreateStatic(&FSourceBridgeToolbar::OnImportVMF))
+				);
+
+				MenuBuilder.AddMenuEntry(
+					LOCTEXT("ImportBSP", "Import BSP..."),
+					LOCTEXT("ImportBSPTooltip", "Decompile a BSP file via BSPSource and import into the current level"),
+					FSlateIcon(),
+					FUIAction(FExecuteAction::CreateStatic(&FSourceBridgeToolbar::OnImportBSP))
 				);
 
 				MenuBuilder.AddSeparator();
@@ -333,6 +352,96 @@ void FSourceBridgeToolbar::OnExportTestBoxRoom()
 		FMessageDialog::Open(EAppMsgType::Ok,
 			LOCTEXT("BoxRoomFail", "Failed to write test box room VMF."));
 	}
+}
+
+void FSourceBridgeToolbar::OnImportVMF()
+{
+	UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+	if (!World)
+	{
+		FMessageDialog::Open(EAppMsgType::Ok,
+			LOCTEXT("NoWorldImportVMF", "No editor world available."));
+		return;
+	}
+
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	if (!DesktopPlatform) return;
+
+	TArray<FString> OutFiles;
+	bool bOpened = DesktopPlatform->OpenFileDialog(
+		FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
+		TEXT("Import VMF File"),
+		FPaths::ProjectSavedDir(),
+		TEXT(""),
+		TEXT("VMF Files (*.vmf)|*.vmf"),
+		0,
+		OutFiles);
+
+	if (!bOpened || OutFiles.Num() == 0) return;
+
+	FScopedSlowTask SlowTask(1.0f, LOCTEXT("ImportingVMF", "Importing VMF..."));
+	SlowTask.MakeDialog();
+
+	FVMFImportSettings Settings;
+	FVMFImportResult Result = FVMFImporter::ImportFile(OutFiles[0], World, Settings);
+
+	FString Msg = FString::Printf(TEXT("VMF Import Complete\n\nBrushes: %d\nEntities: %d"),
+		Result.BrushesImported, Result.EntitiesImported);
+	if (Result.Warnings.Num() > 0)
+	{
+		Msg += FString::Printf(TEXT("\nWarnings: %d"), Result.Warnings.Num());
+		for (const FString& W : Result.Warnings)
+		{
+			Msg += TEXT("\n- ") + W;
+		}
+	}
+
+	FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(Msg));
+}
+
+void FSourceBridgeToolbar::OnImportBSP()
+{
+	UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+	if (!World)
+	{
+		FMessageDialog::Open(EAppMsgType::Ok,
+			LOCTEXT("NoWorldImportBSP", "No editor world available."));
+		return;
+	}
+
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	if (!DesktopPlatform) return;
+
+	TArray<FString> OutFiles;
+	bool bOpened = DesktopPlatform->OpenFileDialog(
+		FSlateApplication::Get().FindBestParentWindowHandleForDialogs(nullptr),
+		TEXT("Import BSP File"),
+		FPaths::ProjectSavedDir(),
+		TEXT(""),
+		TEXT("BSP Files (*.bsp)|*.bsp"),
+		0,
+		OutFiles);
+
+	if (!bOpened || OutFiles.Num() == 0) return;
+
+	FScopedSlowTask SlowTask(1.0f, LOCTEXT("ImportingBSP", "Decompiling and importing BSP..."));
+	SlowTask.MakeDialog();
+
+	FVMFImportSettings Settings;
+	FVMFImportResult Result = FBSPImporter::ImportFile(OutFiles[0], World, Settings);
+
+	FString Msg = FString::Printf(TEXT("BSP Import Complete\n\nBrushes: %d\nEntities: %d"),
+		Result.BrushesImported, Result.EntitiesImported);
+	if (Result.Warnings.Num() > 0)
+	{
+		Msg += FString::Printf(TEXT("\nWarnings: %d"), Result.Warnings.Num());
+		for (const FString& W : Result.Warnings)
+		{
+			Msg += TEXT("\n- ") + W;
+		}
+	}
+
+	FMessageDialog::Open(EAppMsgType::Ok, FText::FromString(Msg));
 }
 
 void FSourceBridgeToolbar::OnOpenSettings()

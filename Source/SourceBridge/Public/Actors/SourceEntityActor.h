@@ -35,6 +35,19 @@ public:
 };
 
 /**
+ * Generic (non-abstract) Source entity for import.
+ * Used when no specific subclass matches the imported classname.
+ */
+UCLASS(Blueprintable, ClassGroup = "SourceBridge", meta = (DisplayName = "Source Generic Entity"))
+class SOURCEBRIDGE_API ASourceGenericEntity : public ASourceEntityActor
+{
+	GENERATED_BODY()
+
+public:
+	ASourceGenericEntity() {}
+};
+
+/**
  * Terrorist spawn point. Exports as info_player_terrorist.
  */
 UCLASS(Blueprintable, ClassGroup = "SourceBridge", meta = (DisplayName = "Source T Spawn"))
