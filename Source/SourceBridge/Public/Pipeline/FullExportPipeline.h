@@ -54,6 +54,9 @@ struct SOURCEBRIDGE_API FFullExportResult
 	TArray<FString> Warnings;
 };
 
+/** Callback for pipeline progress updates. StepName is the current step description. */
+DECLARE_DELEGATE_TwoParams(FOnPipelineProgress, const FString& /*StepName*/, float /*Progress 0-1*/);
+
 /**
  * One-click full export pipeline.
  *
@@ -67,4 +70,13 @@ public:
 	 * Run the full export pipeline on the current editor world.
 	 */
 	static FFullExportResult Run(UWorld* World, const FFullExportSettings& Settings);
+
+	/**
+	 * Run with progress callback for UI integration.
+	 * Callback is invoked at the start of each pipeline step.
+	 */
+	static FFullExportResult RunWithProgress(
+		UWorld* World,
+		const FFullExportSettings& Settings,
+		FOnPipelineProgress ProgressCallback);
 };

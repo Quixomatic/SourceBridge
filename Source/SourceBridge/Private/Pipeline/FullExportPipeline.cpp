@@ -14,8 +14,24 @@
 
 FFullExportResult FFullExportPipeline::Run(UWorld* World, const FFullExportSettings& Settings)
 {
+	return RunWithProgress(World, Settings, FOnPipelineProgress());
+}
+
+FFullExportResult FFullExportPipeline::RunWithProgress(
+	UWorld* World,
+	const FFullExportSettings& Settings,
+	FOnPipelineProgress ProgressCallback)
+{
 	FFullExportResult Result;
 	double StartTime = FPlatformTime::Seconds();
+
+	auto ReportProgress = [&ProgressCallback](const FString& Step, float Progress)
+	{
+		if (ProgressCallback.IsBound())
+		{
+			ProgressCallback.Execute(Step, Progress);
+		}
+	};
 
 	if (!World)
 	{
@@ -26,6 +42,7 @@ FFullExportResult FFullExportPipeline::Run(UWorld* World, const FFullExportSetti
 	// ---- Step 1: Validate ----
 	if (Settings.bValidate)
 	{
+		ReportProgress(TEXT("Validating scene..."), 0.0f);
 		UE_LOG(LogTemp, Log, TEXT("SourceBridge: Running pre-export validation..."));
 		FValidationResult Validation = FExportValidator::ValidateWorld(World);
 		Validation.LogAll();
@@ -92,6 +109,7 @@ FFullExportResult FFullExportPipeline::Run(UWorld* World, const FFullExportSetti
 	// Models must be compiled before the map so prop_static references resolve
 	if (Settings.bCompile && !ToolsDir.IsEmpty() && !GameDir.IsEmpty())
 	{
+		ReportProgress(TEXT("Compiling models..."), 0.2f);
 		FString ModelsDir = OutputDir / TEXT("models");
 		PlatformFile.CreateDirectoryTree(*ModelsDir);
 
@@ -170,6 +188,7 @@ FFullExportResult FFullExportPipeline::Run(UWorld* World, const FFullExportSetti
 	}
 
 	// ---- Step 4: Export VMF ----
+	ReportProgress(TEXT("Exporting VMF..."), 0.4f);
 	UE_LOG(LogTemp, Log, TEXT("SourceBridge: Exporting scene to VMF..."));
 	FString VMFContent = FVMFExporter::ExportScene(World);
 
@@ -192,6 +211,7 @@ FFullExportResult FFullExportPipeline::Run(UWorld* World, const FFullExportSetti
 	// ---- Step 5: Compile map (dependency: after materials and models) ----
 	if (Settings.bCompile)
 	{
+		ReportProgress(TEXT("Compiling map (vbsp/vvis/vrad)..."), 0.6f);
 		FCompileSettings CompileSettings;
 		CompileSettings.VMFPath = Result.VMFPath;
 		CompileSettings.bFastCompile = Settings.bFastCompile;
@@ -240,6 +260,7 @@ FFullExportResult FFullExportPipeline::Run(UWorld* World, const FFullExportSetti
 	// ---- Step 6: Package distributable ----
 	if (Settings.bPackage)
 	{
+		ReportProgress(TEXT("Packaging distributable..."), 0.9f);
 		FString PackageDir = OutputDir / TEXT("package") / Settings.GameName;
 		FString PackageMaps = PackageDir / TEXT("maps");
 		FString PackageMaterials = PackageDir / TEXT("materials");

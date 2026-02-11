@@ -8,7 +8,10 @@
 #include "HAL/PlatformFilemanager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/MessageDialog.h"
+#include "Misc/ScopedSlowTask.h"
 #include "Framework/MultiBox/MultiBoxBuilder.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "Widgets/Notifications/SNotificationList.h"
 
 #define LOCTEXT_NAMESPACE "SourceBridgeToolbar"
 
@@ -152,14 +155,64 @@ void FSourceBridgeToolbar::OnFullExport()
 	ExportSettings.bCopyToGame = Settings->bCopyToGame;
 	ExportSettings.bValidate = Settings->bValidateBeforeExport;
 
-	FFullExportResult Result = FFullExportPipeline::Run(World, ExportSettings);
+	// Progress bar with steps
+	FScopedSlowTask SlowTask(100.0f, LOCTEXT("ExportProgress", "SourceBridge: Exporting..."));
+	SlowTask.MakeDialog(true);
+
+	// Run pipeline with progress callback
+	FOnPipelineProgress ProgressCallback;
+	ProgressCallback.BindLambda([&SlowTask](const FString& StepName, float Progress)
+	{
+		float StepAmount = Progress * 100.0f - SlowTask.CompletedWork;
+		if (StepAmount > 0.0f)
+		{
+			SlowTask.EnterProgressFrame(StepAmount, FText::FromString(StepName));
+		}
+	});
+
+	FFullExportResult Result = FFullExportPipeline::RunWithProgress(World, ExportSettings, ProgressCallback);
+
+	// Complete remaining progress
+	float Remaining = 100.0f - SlowTask.CompletedWork;
+	if (Remaining > 0.0f)
+	{
+		SlowTask.EnterProgressFrame(Remaining, LOCTEXT("StepDone", "Complete"));
+	}
+
+	// Show result notification
+	FNotificationInfo Info(FText::GetEmpty());
+	Info.bFireAndForget = true;
+	Info.ExpireDuration = 8.0f;
+	Info.bUseSuccessFailIcons = true;
 
 	if (Result.bSuccess)
 	{
+		FString Summary = FString::Printf(TEXT("Export succeeded (%.1fs + %.1fs compile)"),
+			Result.ExportSeconds, Result.CompileSeconds);
+
+		if (Result.Warnings.Num() > 0)
+		{
+			Summary += FString::Printf(TEXT(" - %d warnings"), Result.Warnings.Num());
+		}
+
+		Info.Text = FText::FromString(Summary);
+		Info.Image = FCoreStyle::Get().GetBrush(TEXT("Icons.SuccessWithColor"));
+
+		TSharedPtr<SNotificationItem> Notification = FSlateNotificationManager::Get().AddNotification(Info);
+		if (Notification.IsValid())
+		{
+			Notification->SetCompletionState(SNotificationItem::CS_Success);
+		}
+
+		// Also show full details dialog
 		FString Msg = FString::Printf(TEXT("Export succeeded!\n\nVMF: %s"), *Result.VMFPath);
 		if (!Result.BSPPath.IsEmpty())
 		{
 			Msg += FString::Printf(TEXT("\nBSP: %s"), *Result.BSPPath);
+		}
+		if (!Result.PackagePath.IsEmpty())
+		{
+			Msg += FString::Printf(TEXT("\nPackage: %s"), *Result.PackagePath);
 		}
 		Msg += FString::Printf(TEXT("\nExport: %.1fs, Compile: %.1fs"),
 			Result.ExportSeconds, Result.CompileSeconds);
@@ -177,6 +230,16 @@ void FSourceBridgeToolbar::OnFullExport()
 	}
 	else
 	{
+		Info.Text = FText::Format(LOCTEXT("ExportFailNotif", "Export failed: {0}"),
+			FText::FromString(Result.ErrorMessage));
+		Info.Image = FCoreStyle::Get().GetBrush(TEXT("Icons.ErrorWithColor"));
+
+		TSharedPtr<SNotificationItem> Notification = FSlateNotificationManager::Get().AddNotification(Info);
+		if (Notification.IsValid())
+		{
+			Notification->SetCompletionState(SNotificationItem::CS_Fail);
+		}
+
 		FMessageDialog::Open(EAppMsgType::Ok,
 			FText::Format(LOCTEXT("FullExportFail", "Export failed:\n{0}"),
 				FText::FromString(Result.ErrorMessage)));
