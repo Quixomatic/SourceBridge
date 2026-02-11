@@ -1,6 +1,7 @@
 #include "VMF/VMFExporter.h"
 #include "VMF/BrushConverter.h"
 #include "VMF/SkyboxExporter.h"
+#include "VMF/VisOptimizer.h"
 #include "Entities/EntityExporter.h"
 #include "Entities/PropExporter.h"
 #include "Materials/MaterialMapper.h"
@@ -78,6 +79,12 @@ FString FVMFExporter::ExportScene(UWorld* World)
 			continue;
 		}
 
+		// Skip hint brushes (handled separately by VisOptimizer)
+		if (FVisOptimizer::IsHintBrush(Brush))
+		{
+			continue;
+		}
+
 		// Check if this brush should be a brush entity (func_detail, func_wall, etc.)
 		FString BrushEntityClass;
 		FString BrushTargetName;
@@ -113,6 +120,14 @@ FString FVMFExporter::ExportScene(UWorld* World)
 			else if (TagStr.Equals(TEXT("func_breakable"), ESearchCase::IgnoreCase))
 			{
 				BrushEntityClass = TEXT("func_breakable");
+			}
+			else if (TagStr.Equals(TEXT("func_areaportal"), ESearchCase::IgnoreCase))
+			{
+				BrushEntityClass = TEXT("func_areaportal");
+			}
+			else if (TagStr.Equals(TEXT("func_viscluster"), ESearchCase::IgnoreCase))
+			{
+				BrushEntityClass = TEXT("func_viscluster");
 			}
 			else if (TagStr.StartsWith(TEXT("targetname:"), ESearchCase::IgnoreCase))
 			{
@@ -180,6 +195,14 @@ FString FVMFExporter::ExportScene(UWorld* World)
 				BrushCount++;
 			}
 		}
+	}
+
+	// Add hint/skip brushes to worldspawn (visibility optimization)
+	TArray<FVMFKeyValues> HintBrushes = FVisOptimizer::ExportHintBrushes(
+		World, SolidIdCounter, SideIdCounter);
+	for (FVMFKeyValues& HintBrush : HintBrushes)
+	{
+		WorldNode.Children.Add(MoveTemp(HintBrush));
 	}
 
 	// Add skybox shell brushes to worldspawn

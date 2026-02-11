@@ -1,5 +1,6 @@
 #include "SourceBridgeModule.h"
 #include "VMF/VMFExporter.h"
+#include "VMF/VisOptimizer.h"
 #include "Compile/CompilePipeline.h"
 #include "Models/SMDExporter.h"
 #include "Models/QCWriter.h"
@@ -360,6 +361,43 @@ void FSourceBridgeModule::StartupModule()
 		})
 	);
 
+	AnalyzeVisCommand = MakeShared<FAutoConsoleCommand>(
+		TEXT("SourceBridge.AnalyzeVis"),
+		TEXT("Analyze the scene for vis optimization suggestions."),
+		FConsoleCommandDelegate::CreateLambda([]()
+		{
+			UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+			if (!World)
+			{
+				UE_LOG(LogTemp, Error, TEXT("SourceBridge: No editor world available."));
+				return;
+			}
+
+			TArray<FVisOptSuggestion> Suggestions = FVisOptimizer::AnalyzeWorld(World);
+
+			if (Suggestions.Num() == 0)
+			{
+				UE_LOG(LogTemp, Log, TEXT("SourceBridge: No vis optimization suggestions for this scene."));
+				return;
+			}
+
+			UE_LOG(LogTemp, Log, TEXT("SourceBridge: %d vis optimization suggestions:"), Suggestions.Num());
+			for (int32 i = 0; i < Suggestions.Num(); i++)
+			{
+				const FVisOptSuggestion& S = Suggestions[i];
+				const TCHAR* TypeStr = TEXT("Unknown");
+				switch (S.Type)
+				{
+				case FVisOptSuggestion::EType::HintBrush: TypeStr = TEXT("HINT"); break;
+				case FVisOptSuggestion::EType::AreaPortal: TypeStr = TEXT("AREAPORTAL"); break;
+				case FVisOptSuggestion::EType::VisCluster: TypeStr = TEXT("VISCLUSTER"); break;
+				}
+
+				UE_LOG(LogTemp, Log, TEXT("  [%s] %s"), TypeStr, *S.Description);
+			}
+		})
+	);
+
 	// Auto-load FGD from Resources directory if present
 	FString PluginFGDPath = FPaths::ProjectPluginsDir() / TEXT("SourceBridge") / TEXT("Resources") / TEXT("cstrike.fgd");
 	if (!FPaths::FileExists(PluginFGDPath))
@@ -374,7 +412,7 @@ void FSourceBridgeModule::StartupModule()
 			*PluginFGDPath, FGDDatabase.Classes.Num());
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("SourceBridge plugin loaded. Commands: ExportScene, ExportTestBoxRoom, CompileMap, ExportModel, FullExport, Validate, LoadFGD, ListEntities"));
+	UE_LOG(LogTemp, Log, TEXT("SourceBridge plugin loaded. Commands: ExportScene, ExportTestBoxRoom, CompileMap, ExportModel, FullExport, Validate, LoadFGD, ListEntities, AnalyzeVis"));
 }
 
 void FSourceBridgeModule::ShutdownModule()
@@ -390,6 +428,7 @@ void FSourceBridgeModule::ShutdownModule()
 	ValidateCommand.Reset();
 	LoadFGDCommand.Reset();
 	ListEntitiesCommand.Reset();
+	AnalyzeVisCommand.Reset();
 }
 
 #undef LOCTEXT_NAMESPACE

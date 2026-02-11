@@ -27,4 +27,5 @@ private:
 	TSharedPtr<class FAutoConsoleCommand> ValidateCommand;
 	TSharedPtr<class FAutoConsoleCommand> LoadFGDCommand;
 	TSharedPtr<class FAutoConsoleCommand> ListEntitiesCommand;
+	TSharedPtr<class FAutoConsoleCommand> AnalyzeVisCommand;
 };
