@@ -10,6 +10,9 @@
 #include "PhysicsEngine/BodySetup.h"
 #include "PhysicsEngine/ConvexElem.h"
 #include "ReferenceSkeleton.h"
+#include "Animation/AnimSequence.h"
+#include "Animation/Skeleton.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 
 FSMDExportResult FSMDExporter::ExportStaticMesh(UStaticMesh* Mesh, float Scale)
 {
@@ -613,10 +616,187 @@ FSMDExportResult FSMDExporter::ExportSkeletalMesh(USkeletalMesh* Mesh, float Sca
 	// Build idle animation SMD
 	Result.IdleSMD = BuildIdleSMD(Bones);
 
+	// Export animations from associated AnimSequences
+	Result.Animations = ExportAnimations(Mesh, Scale);
+
 	Result.bSuccess = true;
 
-	UE_LOG(LogTemp, Log, TEXT("SourceBridge: Exported skeletal mesh %s - %d bones, %d triangles, %d materials"),
-		*Mesh->GetName(), Bones.Num(), Triangles.Num(), Result.MaterialNames.Num());
+	UE_LOG(LogTemp, Log, TEXT("SourceBridge: Exported skeletal mesh %s - %d bones, %d triangles, %d materials, %d animations"),
+		*Mesh->GetName(), Bones.Num(), Triangles.Num(), Result.MaterialNames.Num(), Result.Animations.Num());
 
 	return Result;
+}
+
+FString FSMDExporter::BuildAnimationSMD(const TArray<FSMDBone>& Bones, const FSMDAnimation& Animation)
+{
+	FString Out;
+	Out.Reserve(Animation.NumFrames * Bones.Num() * 80);
+
+	Out += TEXT("version 1\n");
+
+	// Nodes (same as reference SMD)
+	Out += TEXT("nodes\n");
+	for (const FSMDBone& Bone : Bones)
+	{
+		Out += FString::Printf(TEXT("  %d \"%s\" %d\n"), Bone.Index, *Bone.Name, Bone.ParentIndex);
+	}
+	Out += TEXT("end\n");
+
+	// Skeleton with per-frame bone transforms
+	Out += TEXT("skeleton\n");
+	for (int32 Frame = 0; Frame < Animation.NumFrames; Frame++)
+	{
+		Out += FString::Printf(TEXT("  time %d\n"), Frame);
+
+		if (Animation.Frames.IsValidIndex(Frame))
+		{
+			const TArray<FSMDBoneFrame>& BoneFrames = Animation.Frames[Frame];
+			for (int32 BoneIdx = 0; BoneIdx < Bones.Num(); BoneIdx++)
+			{
+				if (BoneFrames.IsValidIndex(BoneIdx))
+				{
+					const FSMDBoneFrame& BF = BoneFrames[BoneIdx];
+					Out += FString::Printf(TEXT("    %d  %.6f %.6f %.6f  %.6f %.6f %.6f\n"),
+						BoneIdx,
+						BF.Position.X, BF.Position.Y, BF.Position.Z,
+						BF.Rotation.X, BF.Rotation.Y, BF.Rotation.Z);
+				}
+				else
+				{
+					// Fallback to bind pose
+					const FSMDBone& Bone = Bones[BoneIdx];
+					Out += FString::Printf(TEXT("    %d  %.6f %.6f %.6f  %.6f %.6f %.6f\n"),
+						BoneIdx,
+						Bone.Position.X, Bone.Position.Y, Bone.Position.Z,
+						Bone.Rotation.X, Bone.Rotation.Y, Bone.Rotation.Z);
+				}
+			}
+		}
+	}
+	Out += TEXT("end\n");
+
+	return Out;
+}
+
+TArray<FSMDAnimation> FSMDExporter::ExportAnimations(USkeletalMesh* Mesh, float Scale)
+{
+	TArray<FSMDAnimation> Animations;
+
+	if (!Mesh) return Animations;
+
+	USkeleton* Skeleton = Mesh->GetSkeleton();
+	if (!Skeleton) return Animations;
+
+	const FReferenceSkeleton& RefSkeleton = Mesh->GetRefSkeleton();
+	int32 NumBones = RefSkeleton.GetNum();
+
+	// Find all AnimSequences that reference this skeleton via asset registry
+	FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+	TArray<FAssetData> AnimAssets;
+	AssetRegistry.GetAssetsByClass(UAnimSequence::StaticClass()->GetClassPathName(), AnimAssets);
+
+	for (const FAssetData& AssetData : AnimAssets)
+	{
+		UAnimSequence* AnimSeq = Cast<UAnimSequence>(AssetData.GetAsset());
+		if (!AnimSeq) continue;
+
+		// Check if this animation uses the same skeleton
+		if (AnimSeq->GetSkeleton() != Skeleton) continue;
+
+		FSMDAnimation Anim;
+		Anim.Name = AnimSeq->GetName();
+
+		// Clean the name for Source engine (lowercase, no special chars)
+		Anim.Name = Anim.Name.Replace(TEXT(" "), TEXT("_")).ToLower();
+		if (Anim.Name.StartsWith(TEXT("a_"))) Anim.Name = Anim.Name.Mid(2);
+		else if (Anim.Name.StartsWith(TEXT("anim_"))) Anim.Name = Anim.Name.Mid(5);
+
+		float SequenceLength = AnimSeq->GetPlayLength();
+		float SampleRate = AnimSeq->GetSamplingFrameRate().AsDecimal();
+		if (SampleRate <= 0.0f) SampleRate = 30.0f;
+
+		Anim.FrameRate = SampleRate;
+		Anim.NumFrames = FMath::Max(1, FMath::CeilToInt(SequenceLength * SampleRate));
+
+		// Sample bone transforms at each frame
+		for (int32 Frame = 0; Frame < Anim.NumFrames; Frame++)
+		{
+			float Time = (Anim.NumFrames > 1) ? (Frame / (float)(Anim.NumFrames - 1)) * SequenceLength : 0.0f;
+
+			TArray<FSMDBoneFrame> BoneFrames;
+			BoneFrames.SetNum(NumBones);
+
+			for (int32 BoneIdx = 0; BoneIdx < NumBones; BoneIdx++)
+			{
+				FTransform BoneTransform;
+
+				// Get the bone transform at this time from the animation
+				FName BoneName = RefSkeleton.GetBoneName(BoneIdx);
+				const FBoneAnimationTrack* Track = nullptr;
+
+				// Find the track for this bone in the animation data
+				const IAnimationDataModel* DataModel = AnimSeq->GetDataModel();
+				if (DataModel)
+				{
+					for (const FBoneAnimationTrack& AnimTrack : DataModel->GetBoneAnimationTracks())
+					{
+						if (AnimTrack.Name == BoneName)
+						{
+							Track = &AnimTrack;
+							break;
+						}
+					}
+				}
+
+				if (Track && Track->InternalTrackData.PosKeys.Num() > 0)
+				{
+					// Sample position from animation track
+					int32 KeyIdx = FMath::Clamp(
+						FMath::RoundToInt(Time * SampleRate),
+						0, Track->InternalTrackData.PosKeys.Num() - 1);
+
+					FVector3f Pos = Track->InternalTrackData.PosKeys[KeyIdx];
+					BoneFrames[BoneIdx].Position = ConvertPosition(FVector(Pos.X, Pos.Y, Pos.Z), Scale);
+
+					// Sample rotation
+					int32 RotKeyIdx = FMath::Clamp(
+						FMath::RoundToInt(Time * SampleRate),
+						0, Track->InternalTrackData.RotKeys.Num() - 1);
+
+					FQuat4f RotQuat = Track->InternalTrackData.RotKeys[RotKeyIdx];
+					FRotator Rot = FQuat(RotQuat.X, RotQuat.Y, RotQuat.Z, RotQuat.W).Rotator();
+					BoneFrames[BoneIdx].Rotation = FVector(
+						FMath::DegreesToRadians(Rot.Roll),
+						FMath::DegreesToRadians(-Rot.Pitch),
+						FMath::DegreesToRadians(Rot.Yaw)
+					);
+				}
+				else
+				{
+					// No animation data for this bone, use bind pose
+					FTransform BoneLocal = RefSkeleton.GetRefBonePose()[BoneIdx];
+					FVector Pos = BoneLocal.GetTranslation();
+					FRotator Rot = BoneLocal.GetRotation().Rotator();
+
+					BoneFrames[BoneIdx].Position = ConvertPosition(Pos, Scale);
+					BoneFrames[BoneIdx].Rotation = FVector(
+						FMath::DegreesToRadians(Rot.Roll),
+						FMath::DegreesToRadians(-Rot.Pitch),
+						FMath::DegreesToRadians(Rot.Yaw)
+					);
+				}
+			}
+
+			Anim.Frames.Add(MoveTemp(BoneFrames));
+		}
+
+		Animations.Add(MoveTemp(Anim));
+
+		UE_LOG(LogTemp, Log, TEXT("SourceBridge: Exported animation '%s' - %d frames at %.1f fps"),
+			*Anim.Name, Anim.NumFrames, Anim.FrameRate);
+	}
+
+	return Animations;
 }

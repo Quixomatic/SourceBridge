@@ -38,12 +38,19 @@ FString FQCWriter::GenerateQC(const FQCSettings& Settings)
 	// Idle sequence (required even for static props)
 	if (!Settings.IdleSMD.IsEmpty())
 	{
-		QC += FString::Printf(TEXT("$sequence idle \"%s\" fps 30\n"), *Settings.IdleSMD);
+		QC += FString::Printf(TEXT("$sequence idle \"%s\" fps %.0f\n"), *Settings.IdleSMD, Settings.AnimFPS);
 	}
 	else
 	{
 		// Use reference mesh as idle if no separate idle SMD
-		QC += FString::Printf(TEXT("$sequence idle \"%s\" fps 30\n"), *Settings.BodySMD);
+		QC += FString::Printf(TEXT("$sequence idle \"%s\" fps %.0f\n"), *Settings.BodySMD, Settings.AnimFPS);
+	}
+
+	// Additional animation sequences
+	for (const auto& AnimSeq : Settings.AnimationSequences)
+	{
+		QC += FString::Printf(TEXT("$sequence \"%s\" \"%s\" fps %.0f\n"),
+			*AnimSeq.Key, *AnimSeq.Value, Settings.AnimFPS);
 	}
 
 	// Collision model

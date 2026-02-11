@@ -39,6 +39,12 @@ struct FQCSettings
 
 	/** Mass override in kg (0 = auto from volume * surfaceprop density) */
 	float MassOverride = 0.0f;
+
+	/** Additional animation sequences (name -> SMD filename pairs) */
+	TArray<TPair<FString, FString>> AnimationSequences;
+
+	/** FPS for animation sequences (default 30) */
+	float AnimFPS = 30.0f;
 };
 
 /**

@@ -50,6 +50,27 @@ struct FSMDBone
 };
 
 /**
+ * Bone transform for a single frame of animation.
+ */
+struct FSMDBoneFrame
+{
+	FVector Position;
+	FVector Rotation; // Euler angles in radians
+};
+
+/**
+ * A single animation sequence ready for SMD export.
+ */
+struct FSMDAnimation
+{
+	FString Name;
+	float FrameRate = 30.0f;
+	int32 NumFrames = 1;
+	/** Per-frame per-bone transforms. Outer = frame, Inner = bone index. */
+	TArray<TArray<FSMDBoneFrame>> Frames;
+};
+
+/**
  * Result of an SMD export operation.
  */
 struct FSMDExportResult
@@ -59,6 +80,7 @@ struct FSMDExportResult
 	FString PhysicsSMD;    // Physics collision mesh content (simplified)
 	FString IdleSMD;       // Idle animation (static pose)
 	TArray<FString> MaterialNames; // All materials used
+	TArray<FSMDAnimation> Animations; // Exported animation sequences
 	FString ErrorMessage;
 };
 
@@ -105,6 +127,18 @@ public:
 	 * Build a minimal idle animation SMD (single frame, static pose).
 	 */
 	static FString BuildIdleSMD(const TArray<FSMDBone>& Bones);
+
+	/**
+	 * Build an animation SMD from bone hierarchy and per-frame transforms.
+	 * Animation SMDs have the skeleton section with multiple time frames but no triangles.
+	 */
+	static FString BuildAnimationSMD(const TArray<FSMDBone>& Bones, const FSMDAnimation& Animation);
+
+	/**
+	 * Export animations from a USkeletalMesh's associated AnimSequences.
+	 * Extracts bone transforms per frame for each animation.
+	 */
+	static TArray<FSMDAnimation> ExportAnimations(USkeletalMesh* Mesh, float Scale = 0.525f);
 
 private:
 	/** Convert a UE position to Source engine coordinates for models. */
