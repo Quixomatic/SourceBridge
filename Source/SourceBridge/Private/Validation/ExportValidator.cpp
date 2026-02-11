@@ -5,6 +5,8 @@
 #include "Materials/SurfaceProperties.h"
 #include "Engine/World.h"
 #include "Engine/Brush.h"
+#include "Engine/StaticMeshActor.h"
+#include "Engine/StaticMesh.h"
 #include "GameFramework/PlayerStart.h"
 #include "Engine/Light.h"
 #include "Engine/PointLight.h"
@@ -12,6 +14,7 @@
 #include "Engine/DirectionalLight.h"
 #include "Engine/TriggerVolume.h"
 #include "Engine/TriggerBox.h"
+#include "PhysicsEngine/BodySetup.h"
 #include "Model.h"
 #include "EngineUtils.h"
 
@@ -53,6 +56,7 @@ FValidationResult FExportValidator::ValidateWorld(UWorld* World)
 	ValidateLighting(World, Result);
 	ValidateSpawns(World, Result);
 	ValidateEntityClassnames(World, Result);
+	ValidateStaticMeshes(World, Result);
 
 	return Result;
 }
@@ -382,4 +386,63 @@ void FExportValidator::ValidateSurfaceProperties(UWorld* World, FValidationResul
 {
 	// This can be called separately for surface prop validation
 	// Currently a placeholder for when material export adds $surfaceprop
+}
+
+void FExportValidator::ValidateStaticMeshes(UWorld* World, FValidationResult& Result)
+{
+	int32 StaticMeshCount = 0;
+	int32 HighPolyCount = 0;
+	int32 NoCollisionCount = 0;
+
+	for (TActorIterator<AStaticMeshActor> It(World); It; ++It)
+	{
+		AStaticMeshActor* Actor = *It;
+		if (!Actor) continue;
+
+		UStaticMeshComponent* Comp = Actor->GetStaticMeshComponent();
+		if (!Comp) continue;
+
+		UStaticMesh* Mesh = Comp->GetStaticMesh();
+		if (!Mesh) continue;
+
+		StaticMeshCount++;
+
+		// Warn about high-poly meshes that may cause performance issues
+		if (Mesh->GetNumTriangles(0) > 10000)
+		{
+			HighPolyCount++;
+			Result.AddMessage(EValidationSeverity::Warning, TEXT("Geometry"),
+				FString::Printf(TEXT("Static mesh '%s' has %d triangles. Consider simplifying for Source."),
+					*Mesh->GetName(), Mesh->GetNumTriangles(0)));
+		}
+
+		// Warn about meshes without collision
+		if (!Mesh->GetBodySetup() ||
+			(Mesh->GetBodySetup()->AggGeom.ConvexElems.Num() == 0 &&
+			 Mesh->GetBodySetup()->AggGeom.BoxElems.Num() == 0 &&
+			 Mesh->GetBodySetup()->AggGeom.SphereElems.Num() == 0))
+		{
+			NoCollisionCount++;
+		}
+	}
+
+	if (StaticMeshCount > 0)
+	{
+		Result.AddMessage(EValidationSeverity::Info, TEXT("Geometry"),
+			FString::Printf(TEXT("Static mesh actors: %d (will export as props)"), StaticMeshCount));
+	}
+
+	if (HighPolyCount > 0)
+	{
+		Result.AddMessage(EValidationSeverity::Warning, TEXT("Geometry"),
+			FString::Printf(TEXT("%d static meshes exceed 10K triangles. Source models should be <10K for performance."),
+				HighPolyCount));
+	}
+
+	if (NoCollisionCount > 0)
+	{
+		Result.AddMessage(EValidationSeverity::Info, TEXT("Geometry"),
+			FString::Printf(TEXT("%d static meshes have no simple collision. Physics mesh will use render mesh as fallback."),
+				NoCollisionCount));
+	}
 }

@@ -103,4 +103,7 @@ private:
 
 	/** Validate surface property names. */
 	static void ValidateSurfaceProperties(UWorld* World, FValidationResult& Result);
+
+	/** Warn about static meshes that may not export properly. */
+	static void ValidateStaticMeshes(UWorld* World, FValidationResult& Result);
 };

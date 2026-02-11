@@ -1,5 +1,6 @@
 #include "Entities/EntityExporter.h"
 #include "Utilities/SourceCoord.h"
+#include "Actors/SourceEntityActor.h"
 #include "Engine/World.h"
 #include "Engine/TriggerBox.h"
 #include "Engine/TriggerVolume.h"
@@ -64,6 +65,88 @@ FEntityExportResult FEntityExporter::ExportEntities(UWorld* World)
 
 		if (TryExportTriggerVolume(Actor, Result))
 		{
+			continue;
+		}
+
+		if (TryExportWaterVolume(Actor, Result))
+		{
+			continue;
+		}
+
+		if (TryExportOverlay(Actor, Result))
+		{
+			continue;
+		}
+
+		// Export custom ASourceEntityActor instances
+		ASourceEntityActor* SourceActor = Cast<ASourceEntityActor>(Actor);
+		if (SourceActor && !SourceActor->SourceClassname.IsEmpty())
+		{
+			FSourceEntity Entity;
+			Entity.ClassName = SourceActor->SourceClassname;
+			Entity.TargetName = SourceActor->TargetName;
+			Entity.Origin = SourceActor->GetActorLocation();
+			Entity.Angles = SourceActor->GetActorRotation();
+
+			// Copy user-defined keyvalues
+			for (const auto& KV : SourceActor->KeyValues)
+			{
+				Entity.AddKeyValue(KV.Key, KV.Value);
+			}
+
+			// Spawnflags
+			if (SourceActor->SpawnFlags != 0)
+			{
+				Entity.AddKeyValue(TEXT("spawnflags"), SourceActor->SpawnFlags);
+			}
+
+			// Handle subclass-specific properties
+			if (ASourceLight* LightActor = Cast<ASourceLight>(SourceActor))
+			{
+				Entity.AddKeyValue(TEXT("_light"), FString::Printf(TEXT("%d %d %d %d"),
+					LightActor->LightColor.R, LightActor->LightColor.G,
+					LightActor->LightColor.B, LightActor->Brightness));
+				Entity.AddKeyValue(TEXT("style"), LightActor->Style);
+			}
+			else if (ASourceProp* PropActor = Cast<ASourceProp>(SourceActor))
+			{
+				if (!PropActor->ModelPath.IsEmpty())
+				{
+					Entity.AddKeyValue(TEXT("model"), PropActor->ModelPath);
+				}
+				Entity.AddKeyValue(TEXT("skin"), PropActor->Skin);
+				Entity.AddKeyValue(TEXT("solid"), PropActor->Solid);
+			}
+			else if (ASourceTrigger* TriggerActor = Cast<ASourceTrigger>(SourceActor))
+			{
+				Entity.AddKeyValue(TEXT("wait"), TriggerActor->WaitTime);
+				if (SourceActor->SpawnFlags == 0)
+				{
+					Entity.AddKeyValue(TEXT("spawnflags"), 1); // Clients only default
+				}
+			}
+			else if (ASourceEnvSprite* SpriteActor = Cast<ASourceEnvSprite>(SourceActor))
+			{
+				Entity.AddKeyValue(TEXT("model"), SpriteActor->SpriteModel);
+				Entity.AddKeyValue(TEXT("rendermode"), SpriteActor->RenderMode);
+				Entity.AddKeyValue(TEXT("renderamt"), TEXT("255"));
+				Entity.AddKeyValue(TEXT("rendercolor"), FString::Printf(TEXT("%d %d %d"),
+					SpriteActor->RenderColor.R, SpriteActor->RenderColor.G, SpriteActor->RenderColor.B));
+				Entity.AddKeyValue(TEXT("scale"), SpriteActor->SpriteScale);
+			}
+			else if (ASourceSoundscape* SoundActor = Cast<ASourceSoundscape>(SourceActor))
+			{
+				if (!SoundActor->SoundscapeName.IsEmpty())
+				{
+					Entity.AddKeyValue(TEXT("soundscape"), SoundActor->SoundscapeName);
+				}
+				Entity.AddKeyValue(TEXT("radius"), SoundActor->Radius);
+			}
+
+			// Parse any additional actor tags
+			ParseActorTags(SourceActor, Entity);
+
+			Result.Entities.Add(MoveTemp(Entity));
 			continue;
 		}
 	}
@@ -417,6 +500,109 @@ bool FEntityExporter::TryExportTriggerVolume(AActor* Actor, FEntityExportResult&
 	Entity.AddKeyValue(TEXT("wait"), TEXT("1")); // 1 second between triggers
 
 	// Parse actor tags for targetname, classname override, keyvalues, I/O
+	ParseActorTags(Actor, Entity);
+
+	Result.Entities.Add(MoveTemp(Entity));
+	return true;
+}
+
+bool FEntityExporter::TryExportWaterVolume(AActor* Actor, FEntityExportResult& Result)
+{
+	// Water volumes are detected by actor tag "water" or "water:material_name"
+	// They export as func_water_analog brush entities in Source
+	bool bIsWater = false;
+	FString WaterMaterial = TEXT("nature/water_canals01");
+
+	for (const FName& Tag : Actor->Tags)
+	{
+		FString TagStr = Tag.ToString();
+
+		if (TagStr.Equals(TEXT("water"), ESearchCase::IgnoreCase))
+		{
+			bIsWater = true;
+		}
+		else if (TagStr.StartsWith(TEXT("water:"), ESearchCase::IgnoreCase))
+		{
+			bIsWater = true;
+			WaterMaterial = TagStr.Mid(6);
+		}
+	}
+
+	if (!bIsWater)
+	{
+		return false;
+	}
+
+	FSourceEntity Entity;
+	Entity.ClassName = TEXT("func_water_analog");
+	Entity.Origin = Actor->GetActorLocation();
+	Entity.Angles = Actor->GetActorRotation();
+
+	// Water-specific keyvalues
+	Entity.AddKeyValue(TEXT("WaveHeight"), TEXT("3.0"));
+	Entity.AddKeyValue(TEXT("MoveDirIsLocal"), TEXT("0"));
+
+	// Store the water material path for brush face texturing
+	Entity.AddKeyValue(TEXT("_water_material"), WaterMaterial);
+
+	ParseActorTags(Actor, Entity);
+
+	Result.Entities.Add(MoveTemp(Entity));
+	return true;
+}
+
+bool FEntityExporter::TryExportOverlay(AActor* Actor, FEntityExportResult& Result)
+{
+	// Overlays/decals are detected by actor tag "overlay:material_path"
+	// They export as info_overlay point entities in Source
+	FString OverlayMaterial;
+
+	for (const FName& Tag : Actor->Tags)
+	{
+		FString TagStr = Tag.ToString();
+
+		if (TagStr.StartsWith(TEXT("overlay:"), ESearchCase::IgnoreCase))
+		{
+			OverlayMaterial = TagStr.Mid(8);
+			break;
+		}
+		else if (TagStr.StartsWith(TEXT("decal:"), ESearchCase::IgnoreCase))
+		{
+			OverlayMaterial = TagStr.Mid(6);
+			break;
+		}
+	}
+
+	if (OverlayMaterial.IsEmpty())
+	{
+		return false;
+	}
+
+	FSourceEntity Entity;
+	Entity.ClassName = TEXT("info_overlay");
+	Entity.Origin = Actor->GetActorLocation();
+	Entity.Angles = Actor->GetActorRotation();
+
+	Entity.AddKeyValue(TEXT("material"), OverlayMaterial);
+	Entity.AddKeyValue(TEXT("RenderOrder"), TEXT("0"));
+
+	// Default overlay dimensions (can be overridden via kv: tags)
+	FVector Scale = Actor->GetActorScale3D();
+	float StartU = -Scale.X * 16.0f;  // Scale-based UV extents
+	float EndU = Scale.X * 16.0f;
+	float StartV = -Scale.Y * 16.0f;
+	float EndV = Scale.Y * 16.0f;
+
+	Entity.AddKeyValue(TEXT("StartU"), FString::SanitizeFloat(StartU));
+	Entity.AddKeyValue(TEXT("EndU"), FString::SanitizeFloat(EndU));
+	Entity.AddKeyValue(TEXT("StartV"), FString::SanitizeFloat(StartV));
+	Entity.AddKeyValue(TEXT("EndV"), FString::SanitizeFloat(EndV));
+
+	// Basis normal from actor forward vector
+	FVector Forward = Actor->GetActorForwardVector();
+	Entity.AddKeyValue(TEXT("BasisNormal"), FString::Printf(TEXT("%.4f %.4f %.4f"),
+		Forward.X, -Forward.Y, Forward.Z));
+
 	ParseActorTags(Actor, Entity);
 
 	Result.Entities.Add(MoveTemp(Entity));

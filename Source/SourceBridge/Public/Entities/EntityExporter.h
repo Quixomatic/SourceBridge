@@ -91,6 +91,12 @@ private:
 	/** Try to export a trigger volume actor. */
 	static bool TryExportTriggerVolume(AActor* Actor, FEntityExportResult& Result);
 
+	/** Try to export a water volume (actor tagged with "water"). */
+	static bool TryExportWaterVolume(AActor* Actor, FEntityExportResult& Result);
+
+	/** Try to export an overlay/decal (actor tagged with "overlay:material"). */
+	static bool TryExportOverlay(AActor* Actor, FEntityExportResult& Result);
+
 	/** Parse actor tags for I/O connections, targetname, and keyvalues. */
 	static void ParseActorTags(AActor* Actor, FSourceEntity& Entity);
 };

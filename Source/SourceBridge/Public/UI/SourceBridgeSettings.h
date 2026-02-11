@@ -4,6 +4,22 @@
 #include "SourceBridgeSettings.generated.h"
 
 /**
+ * How materials should be exported.
+ */
+UENUM()
+enum class EMaterialExportMode : uint8
+{
+	/** Only use the manual material mapping table. */
+	ManualMapping UMETA(DisplayName = "Manual Mapping"),
+
+	/** Auto-export UE textures to VTF and generate VMT files. */
+	AutoExport UMETA(DisplayName = "Auto Export"),
+
+	/** Auto-export with manual overrides taking priority. */
+	AutoWithOverrides UMETA(DisplayName = "Auto + Overrides")
+};
+
+/**
  * Plugin settings stored per-project.
  * Configurable via the Export Settings panel.
  */
@@ -46,6 +62,10 @@ public:
 	/** Copy compiled BSP to game maps folder */
 	UPROPERTY(Config, EditAnywhere, Category = "Compile")
 	bool bCopyToGame = true;
+
+	/** Material export mode */
+	UPROPERTY(Config, EditAnywhere, Category = "Materials")
+	EMaterialExportMode MaterialExportMode = EMaterialExportMode::AutoWithOverrides;
 
 	/** Run validation before export */
 	UPROPERTY(Config, EditAnywhere, Category = "Validation")
