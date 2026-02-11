@@ -15,6 +15,7 @@
 #include "Engine/PointLight.h"
 #include "Engine/SpotLight.h"
 #include "Engine/SphereReflectionCapture.h"
+#include "Materials/MaterialInterface.h"
 #include "Components/BrushComponent.h"
 #include "BSPOps.h"
 
@@ -122,10 +123,11 @@ FVMFImportResult FVMFImporter::ImportBlocks(const TArray<FVMFKeyValues>& Blocks,
 		}
 	}
 
-	// Rebuild BSP so imported brushes become visible geometry
+	// Full CSG geometry rebuild so imported brushes become visible solid geometry
 	if (Result.BrushesImported > 0 && GEditor)
 	{
-		GEditor->RebuildAlteredBSP();
+		GEditor->csgRebuild(World);
+		GEditor->RedrawLevelEditingViewports(true);
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("VMFImporter: Imported %d brushes, %d entities (%d warnings)"),
@@ -351,6 +353,9 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 	if (TotalVerts == 0) return nullptr;
 	Center /= TotalVerts;
 
+	UE_LOG(LogTemp, Log, TEXT("VMFImporter: Creating brush at center (%f, %f, %f) with %d faces, %d verts"),
+		Center.X, Center.Y, Center.Z, Faces.Num(), TotalVerts);
+
 	// Spawn brush actor
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
@@ -400,10 +405,15 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 		{
 			const FVMFSideData& Side = SideData[FaceIdx];
 
-			// Material name
+			// Material: resolve Source path to UE material interface
 			if (Settings.bImportMaterials && !Side.Material.IsEmpty())
 			{
 				Poly.ItemName = FName(*Side.Material);
+				UMaterialInterface* Mat = FMaterialImporter::ResolveSourceMaterial(Side.Material);
+				if (Mat)
+				{
+					Poly.Material = Mat;
+				}
 			}
 
 			// Texture axes: convert Source UV axes to UE FPoly texture vectors
