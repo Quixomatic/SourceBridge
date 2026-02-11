@@ -5,6 +5,13 @@ All notable changes to SourceBridge will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-02-11
+
+### Fixed
+- FGD parser infinite loop causing UE Editor to hang at 73% on startup (rewritten based on ValveFGD reference)
+- VMF plane winding order producing invalid solids in Hammer++ ("no faces found on solid")
+- Removed debug logging from SourceBridgeModule startup
+
 ## [1.0.0] - 2026-02-11
 
 ### Added
