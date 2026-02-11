@@ -21,7 +21,12 @@ public class SourceBridge : ModuleRules
 			"RenderCore",
 			"RHI",
 			"MeshDescription",
-			"StaticMeshDescription"
+			"StaticMeshDescription",
+			"Landscape",
+			"Foliage",
+			"EditorStyle",
+			"ToolMenus",
+			"InputCore"
 		});
 	}
 }
