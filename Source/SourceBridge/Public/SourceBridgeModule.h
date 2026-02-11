@@ -11,4 +11,5 @@ public:
 
 private:
 	TSharedPtr<class FAutoConsoleCommand> ExportTestBoxRoomCommand;
+	TSharedPtr<class FAutoConsoleCommand> ExportSceneCommand;
 };

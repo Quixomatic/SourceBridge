@@ -3,14 +3,26 @@
 #include "CoreMinimal.h"
 #include "VMF/VMFKeyValues.h"
 
+class UWorld;
+
 /**
  * Builds and exports complete VMF documents.
- * Phase 1: Generates hardcoded test geometry (box rooms).
- * Later phases will read from UE scene data.
+ *
+ * Two modes:
+ * - GenerateBoxRoom(): Hardcoded test geometry for validation
+ * - ExportScene(): Reads ABrush actors from a UE world and converts them
  */
 class SOURCEBRIDGE_API FVMFExporter
 {
 public:
+	/**
+	 * Export the current UE scene to a VMF string.
+	 * Iterates all ABrush actors, converts geometry, builds complete VMF.
+	 * Skips the default builder brush and volume actors.
+	 * Warnings are logged via UE_LOG.
+	 */
+	static FString ExportScene(UWorld* World);
+
 	/**
 	 * Generate a complete VMF string for a sealed box room.
 	 * Room is 512x512x256 Source units with 16-unit thick walls.

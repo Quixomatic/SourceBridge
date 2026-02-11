@@ -1,0 +1,270 @@
+#include "VMF/BrushConverter.h"
+#include "Utilities/SourceCoord.h"
+#include "Engine/Brush.h"
+#include "Model.h"
+
+FBrushConversionResult FBrushConverter::ConvertBrush(
+	ABrush* Brush,
+	int32& SolidIdCounter,
+	int32& SideIdCounter,
+	const FString& DefaultMaterial)
+{
+	FBrushConversionResult Result;
+
+	if (!Brush || !Brush->Brush || !Brush->Brush->Polys)
+	{
+		Result.Warnings.Add(FString::Printf(
+			TEXT("Brush '%s' has no valid model data, skipping."),
+			*Brush->GetName()));
+		return Result;
+	}
+
+	// Check brush type - Source has no subtractive CSG
+	if (Brush->BrushType == EBrushType::Subtract)
+	{
+		Result.Warnings.Add(FString::Printf(
+			TEXT("Brush '%s' is subtractive. Source engine does not support CSG subtraction. Skipping."),
+			*Brush->GetName()));
+		return Result;
+	}
+
+	UModel* Model = Brush->Brush;
+	const TArray<FPoly>& Polys = Model->Polys->Element;
+
+	if (Polys.Num() < 4)
+	{
+		Result.Warnings.Add(FString::Printf(
+			TEXT("Brush '%s' has fewer than 4 faces (%d), not a valid solid. Skipping."),
+			*Brush->GetName(), Polys.Num()));
+		return Result;
+	}
+
+	FTransform BrushTransform = Brush->GetActorTransform();
+
+	// First pass: convert all face vertices to Source space for validation
+	TArray<TArray<FVector>> AllFaceVerticesSource;
+	TArray<FPlane> AllPlanesSource;
+	TArray<FVector> AllNormalsSource;
+	AllFaceVerticesSource.Reserve(Polys.Num());
+	AllPlanesSource.Reserve(Polys.Num());
+	AllNormalsSource.Reserve(Polys.Num());
+
+	for (const FPoly& Poly : Polys)
+	{
+		if (Poly.Vertices.Num() < 3)
+		{
+			continue;
+		}
+
+		TArray<FVector> SourceVerts;
+		SourceVerts.Reserve(Poly.Vertices.Num());
+
+		for (const FVector3f& LocalVert : Poly.Vertices)
+		{
+			FVector WorldVert = BrushTransform.TransformPosition(FVector(LocalVert));
+			FVector SourceVert = FSourceCoord::UEToSource(WorldVert);
+			SourceVerts.Add(SourceVert);
+		}
+
+		// Convert normal to Source space (only direction matters, no translation)
+		FVector WorldNormal = BrushTransform.TransformVectorNoScale(FVector(Poly.Normal));
+		// For normal conversion: negate Y, no scaling needed (it's a direction)
+		FVector SourceNormal(WorldNormal.X, -WorldNormal.Y, WorldNormal.Z);
+		SourceNormal.Normalize();
+
+		AllFaceVerticesSource.Add(MoveTemp(SourceVerts));
+		AllNormalsSource.Add(SourceNormal);
+
+		// Build plane from first vertex and normal
+		if (AllFaceVerticesSource.Last().Num() > 0)
+		{
+			AllPlanesSource.Add(FPlane(AllFaceVerticesSource.Last()[0], SourceNormal));
+		}
+	}
+
+	// Validate convexity
+	if (!ValidateConvexity(AllPlanesSource, AllFaceVerticesSource))
+	{
+		Result.Warnings.Add(FString::Printf(
+			TEXT("Brush '%s' is non-convex. Source requires convex solids. Skipping."),
+			*Brush->GetName()));
+		return Result;
+	}
+
+	// Build the VMF solid
+	FVMFKeyValues Solid(TEXT("solid"));
+	Solid.AddProperty(TEXT("id"), SolidIdCounter++);
+
+	for (int32 FaceIdx = 0; FaceIdx < AllFaceVerticesSource.Num(); ++FaceIdx)
+	{
+		const TArray<FVector>& Verts = AllFaceVerticesSource[FaceIdx];
+		const FVector& Normal = AllNormalsSource[FaceIdx];
+
+		if (Verts.Num() < 3)
+		{
+			continue;
+		}
+
+		// Pick 3 non-collinear points for the plane definition.
+		// After UE->Source conversion (Y negated), we need REVERSED winding
+		// to maintain outward-facing normals in the right-handed system.
+		FVector P1, P2, P3;
+		if (!Pick3PlanePoints(Verts, P1, P2, P3))
+		{
+			Result.Warnings.Add(FString::Printf(
+				TEXT("Brush '%s' face %d has collinear vertices, skipping face."),
+				*Brush->GetName(), FaceIdx));
+			continue;
+		}
+
+		// Reverse winding: swap P2 and P3 to flip normal direction
+		// because negating Y flips handedness
+		FString PlaneStr = FString::Printf(TEXT("(%g %g %g) (%g %g %g) (%g %g %g)"),
+			FMath::RoundToFloat(P1.X), FMath::RoundToFloat(P1.Y), FMath::RoundToFloat(P1.Z),
+			FMath::RoundToFloat(P3.X), FMath::RoundToFloat(P3.Y), FMath::RoundToFloat(P3.Z),
+			FMath::RoundToFloat(P2.X), FMath::RoundToFloat(P2.Y), FMath::RoundToFloat(P2.Z));
+
+		FString UAxis, VAxis;
+		GetDefaultUVAxes(Normal, UAxis, VAxis);
+
+		FVMFKeyValues Side(TEXT("side"));
+		Side.AddProperty(TEXT("id"), SideIdCounter++);
+		Side.AddProperty(TEXT("plane"), PlaneStr);
+		Side.AddProperty(TEXT("material"), DefaultMaterial);
+		Side.AddProperty(TEXT("uaxis"), UAxis);
+		Side.AddProperty(TEXT("vaxis"), VAxis);
+		Side.AddProperty(TEXT("rotation"), 0);
+		Side.AddProperty(TEXT("lightmapscale"), 16);
+		Side.AddProperty(TEXT("smoothing_groups"), 0);
+
+		Solid.Children.Add(MoveTemp(Side));
+	}
+
+	if (Solid.Children.Num() >= 4)
+	{
+		Result.Solids.Add(MoveTemp(Solid));
+	}
+	else
+	{
+		Result.Warnings.Add(FString::Printf(
+			TEXT("Brush '%s' produced fewer than 4 valid sides after conversion. Skipping."),
+			*Brush->GetName()));
+	}
+
+	return Result;
+}
+
+bool FBrushConverter::ValidateConvexity(
+	const TArray<FPlane>& Planes,
+	const TArray<TArray<FVector>>& FaceVertices,
+	float Tolerance)
+{
+	// For each plane, every vertex of every OTHER face must be
+	// on the plane or behind it (negative side).
+	for (int32 PlaneIdx = 0; PlaneIdx < Planes.Num(); ++PlaneIdx)
+	{
+		const FPlane& Plane = Planes[PlaneIdx];
+
+		for (int32 FaceIdx = 0; FaceIdx < FaceVertices.Num(); ++FaceIdx)
+		{
+			if (FaceIdx == PlaneIdx)
+			{
+				continue;
+			}
+
+			for (const FVector& Vert : FaceVertices[FaceIdx])
+			{
+				float Dist = Plane.PlaneDot(Vert);
+				if (Dist > Tolerance)
+				{
+					return false;
+				}
+			}
+		}
+	}
+
+	return true;
+}
+
+bool FBrushConverter::Pick3PlanePoints(
+	const TArray<FVector>& Vertices,
+	FVector& OutP1,
+	FVector& OutP2,
+	FVector& OutP3)
+{
+	if (Vertices.Num() < 3)
+	{
+		return false;
+	}
+
+	OutP1 = Vertices[0];
+
+	// Find a second point that's not coincident with P1
+	int32 Idx2 = -1;
+	for (int32 i = 1; i < Vertices.Num(); ++i)
+	{
+		if (!Vertices[i].Equals(OutP1, 0.1))
+		{
+			OutP2 = Vertices[i];
+			Idx2 = i;
+			break;
+		}
+	}
+	if (Idx2 < 0)
+	{
+		return false;
+	}
+
+	// Find a third point that's not collinear with P1-P2
+	FVector Edge1 = (OutP2 - OutP1).GetSafeNormal();
+	for (int32 i = Idx2 + 1; i < Vertices.Num(); ++i)
+	{
+		FVector Edge2 = (Vertices[i] - OutP1).GetSafeNormal();
+		FVector Cross = FVector::CrossProduct(Edge1, Edge2);
+		if (Cross.SizeSquared() > 0.001)
+		{
+			OutP3 = Vertices[i];
+			return true;
+		}
+	}
+
+	// Fallback: try all pairs
+	for (int32 i = 1; i < Vertices.Num(); ++i)
+	{
+		if (i == Idx2) continue;
+		FVector Edge2 = (Vertices[i] - OutP1).GetSafeNormal();
+		FVector Cross = FVector::CrossProduct(Edge1, Edge2);
+		if (Cross.SizeSquared() > 0.001)
+		{
+			OutP3 = Vertices[i];
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void FBrushConverter::GetDefaultUVAxes(
+	const FVector& Normal,
+	FString& OutUAxis,
+	FString& OutVAxis)
+{
+	if (FMath::Abs(Normal.Z) > 0.5)
+	{
+		// Top or bottom face
+		OutUAxis = TEXT("[1 0 0 0] 0.25");
+		OutVAxis = TEXT("[0 -1 0 0] 0.25");
+	}
+	else if (FMath::Abs(Normal.Y) > 0.5)
+	{
+		// Front or back face
+		OutUAxis = TEXT("[1 0 0 0] 0.25");
+		OutVAxis = TEXT("[0 0 -1 0] 0.25");
+	}
+	else
+	{
+		// Left or right face
+		OutUAxis = TEXT("[0 1 0 0] 0.25");
+		OutVAxis = TEXT("[0 0 -1 0] 0.25");
+	}
+}

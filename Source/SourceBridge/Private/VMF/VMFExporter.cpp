@@ -1,5 +1,86 @@
 #include "VMF/VMFExporter.h"
+#include "VMF/BrushConverter.h"
 #include "Utilities/SourceCoord.h"
+#include "Engine/Brush.h"
+#include "Engine/World.h"
+#include "EngineUtils.h"
+#include "GameFramework/Volume.h"
+
+FString FVMFExporter::ExportScene(UWorld* World)
+{
+	if (!World)
+	{
+		UE_LOG(LogTemp, Error, TEXT("SourceBridge: No world provided for export."));
+		return FString();
+	}
+
+	FString Result;
+
+	Result += BuildVersionInfo().Serialize();
+	Result += BuildVisGroups().Serialize();
+	Result += BuildViewSettings().Serialize();
+
+	// Build world block
+	FVMFKeyValues WorldNode(TEXT("world"));
+	WorldNode.AddProperty(TEXT("id"), 1);
+	WorldNode.AddProperty(TEXT("mapversion"), 1);
+	WorldNode.AddProperty(TEXT("classname"), TEXT("worldspawn"));
+	WorldNode.AddProperty(TEXT("skyname"), TEXT("sky_day01_01"));
+	WorldNode.AddProperty(TEXT("maxpropscreenwidth"), -1);
+	WorldNode.AddProperty(TEXT("detailvbsp"), TEXT("detail.vbsp"));
+	WorldNode.AddProperty(TEXT("detailmaterial"), TEXT("detail/detailsprites"));
+
+	int32 SolidIdCounter = 2;  // worldspawn is id 1
+	int32 SideIdCounter = 1;
+	int32 BrushCount = 0;
+	int32 SkippedCount = 0;
+
+	for (TActorIterator<ABrush> It(World); It; ++It)
+	{
+		ABrush* Brush = *It;
+
+		// Skip the default builder brush (the wireframe template brush)
+		if (Brush == World->GetDefaultBrush())
+		{
+			continue;
+		}
+
+		// Skip volume actors (blocking volumes, post-process, etc.)
+		if (Brush->IsA<AVolume>())
+		{
+			continue;
+		}
+
+		FBrushConversionResult ConvResult = FBrushConverter::ConvertBrush(
+			Brush, SolidIdCounter, SideIdCounter);
+
+		for (const FString& Warning : ConvResult.Warnings)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("SourceBridge: %s"), *Warning);
+		}
+
+		for (FVMFKeyValues& Solid : ConvResult.Solids)
+		{
+			WorldNode.Children.Add(MoveTemp(Solid));
+			BrushCount++;
+		}
+
+		if (ConvResult.Solids.Num() == 0 && ConvResult.Warnings.Num() > 0)
+		{
+			SkippedCount++;
+		}
+	}
+
+	Result += WorldNode.Serialize();
+
+	Result += BuildCameras().Serialize();
+	Result += BuildCordon().Serialize();
+
+	UE_LOG(LogTemp, Log, TEXT("SourceBridge: Exported %d brushes (%d skipped) to VMF."),
+		BrushCount, SkippedCount);
+
+	return Result;
+}
 
 FString FVMFExporter::GenerateBoxRoom()
 {
