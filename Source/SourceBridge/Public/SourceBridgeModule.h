@@ -12,4 +12,5 @@ public:
 private:
 	TSharedPtr<class FAutoConsoleCommand> ExportTestBoxRoomCommand;
 	TSharedPtr<class FAutoConsoleCommand> ExportSceneCommand;
+	TSharedPtr<class FAutoConsoleCommand> CompileMapCommand;
 };
