@@ -1,5 +1,6 @@
 #include "VMF/VMFExporter.h"
 #include "VMF/BrushConverter.h"
+#include "Materials/MaterialMapper.h"
 #include "Utilities/SourceCoord.h"
 #include "Engine/Brush.h"
 #include "Engine/World.h"
@@ -35,6 +36,9 @@ FString FVMFExporter::ExportScene(UWorld* World)
 	int32 BrushCount = 0;
 	int32 SkippedCount = 0;
 
+	// Material mapper resolves UE materials to Source material paths
+	FMaterialMapper MatMapper;
+
 	for (TActorIterator<ABrush> It(World); It; ++It)
 	{
 		ABrush* Brush = *It;
@@ -52,7 +56,7 @@ FString FVMFExporter::ExportScene(UWorld* World)
 		}
 
 		FBrushConversionResult ConvResult = FBrushConverter::ConvertBrush(
-			Brush, SolidIdCounter, SideIdCounter);
+			Brush, SolidIdCounter, SideIdCounter, &MatMapper);
 
 		for (const FString& Warning : ConvResult.Warnings)
 		{

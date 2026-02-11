@@ -4,6 +4,7 @@
 #include "VMF/VMFKeyValues.h"
 
 class ABrush;
+class FMaterialMapper;
 
 /** Result of converting a UE brush to VMF solids. */
 struct SOURCEBRIDGE_API FBrushConversionResult
@@ -21,7 +22,8 @@ struct SOURCEBRIDGE_API FBrushConversionResult
  * 3. Converts to Source engine coordinates (scale 0.525, negate Y)
  * 4. Reverses winding order (left-handed -> right-handed)
  * 5. Picks 3 plane-defining points per face
- * 6. Builds VMF side nodes with default UV axes
+ * 6. Resolves UE materials to Source material paths via FMaterialMapper
+ * 7. Computes UV axes from face geometry
  */
 class SOURCEBRIDGE_API FBrushConverter
 {
@@ -29,11 +31,13 @@ public:
 	/**
 	 * Convert a single ABrush actor to VMF solid(s).
 	 * Increments SolidIdCounter and SideIdCounter as IDs are consumed.
+	 * If MaterialMapper is null, uses DefaultMaterial for all faces.
 	 */
 	static FBrushConversionResult ConvertBrush(
 		ABrush* Brush,
 		int32& SolidIdCounter,
 		int32& SideIdCounter,
+		const FMaterialMapper* MaterialMapper = nullptr,
 		const FString& DefaultMaterial = TEXT("DEV/DEV_MEASUREWALL01A"));
 
 	/**
@@ -60,6 +64,19 @@ private:
 	/** Get default UV axes for a face based on its normal direction. */
 	static void GetDefaultUVAxes(
 		const FVector& Normal,
+		FString& OutUAxis,
+		FString& OutVAxis);
+
+	/**
+	 * Compute UV axes from UE FPoly texture vectors.
+	 * Converts TextureU/TextureV/Base from UE space to Source uaxis/vaxis format.
+	 */
+	static void ComputeUVAxesFromPoly(
+		const FVector& TextureU,
+		const FVector& TextureV,
+		const FVector& TextureBase,
+		const FVector& FaceNormal,
+		const FTransform& BrushTransform,
 		FString& OutUAxis,
 		FString& OutVAxis);
 };

@@ -1,4 +1,5 @@
 #include "VMF/BrushConverter.h"
+#include "Materials/MaterialMapper.h"
 #include "Utilities/SourceCoord.h"
 #include "Engine/Brush.h"
 #include "Model.h"
@@ -7,6 +8,7 @@ FBrushConversionResult FBrushConverter::ConvertBrush(
 	ABrush* Brush,
 	int32& SolidIdCounter,
 	int32& SideIdCounter,
+	const FMaterialMapper* MaterialMapper,
 	const FString& DefaultMaterial)
 {
 	FBrushConversionResult Result;
@@ -95,10 +97,24 @@ FBrushConversionResult FBrushConverter::ConvertBrush(
 	FVMFKeyValues Solid(TEXT("solid"));
 	Solid.AddProperty(TEXT("id"), SolidIdCounter++);
 
-	for (int32 FaceIdx = 0; FaceIdx < AllFaceVerticesSource.Num(); ++FaceIdx)
+	int32 ValidPolyIdx = 0;
+	for (int32 PolyIdx = 0; PolyIdx < Polys.Num(); ++PolyIdx)
 	{
-		const TArray<FVector>& Verts = AllFaceVerticesSource[FaceIdx];
-		const FVector& Normal = AllNormalsSource[FaceIdx];
+		const FPoly& Poly = Polys[PolyIdx];
+		if (Poly.Vertices.Num() < 3)
+		{
+			continue;
+		}
+
+		// Use the pre-converted data at ValidPolyIdx
+		if (ValidPolyIdx >= AllFaceVerticesSource.Num())
+		{
+			break;
+		}
+
+		const TArray<FVector>& Verts = AllFaceVerticesSource[ValidPolyIdx];
+		const FVector& Normal = AllNormalsSource[ValidPolyIdx];
+		ValidPolyIdx++;
 
 		if (Verts.Num() < 3)
 		{
@@ -113,7 +129,7 @@ FBrushConversionResult FBrushConverter::ConvertBrush(
 		{
 			Result.Warnings.Add(FString::Printf(
 				TEXT("Brush '%s' face %d has collinear vertices, skipping face."),
-				*Brush->GetName(), FaceIdx));
+				*Brush->GetName(), PolyIdx));
 			continue;
 		}
 
@@ -124,13 +140,33 @@ FBrushConversionResult FBrushConverter::ConvertBrush(
 			FMath::RoundToFloat(P3.X), FMath::RoundToFloat(P3.Y), FMath::RoundToFloat(P3.Z),
 			FMath::RoundToFloat(P2.X), FMath::RoundToFloat(P2.Y), FMath::RoundToFloat(P2.Z));
 
+		// Resolve material
+		FString MaterialPath = DefaultMaterial;
+		if (MaterialMapper)
+		{
+			MaterialPath = MaterialMapper->MapMaterial(Poly.Material);
+		}
+
+		// Compute UV axes - try to use FPoly texture data, fall back to defaults
 		FString UAxis, VAxis;
-		GetDefaultUVAxes(Normal, UAxis, VAxis);
+		FVector TexU(Poly.TextureU);
+		FVector TexV(Poly.TextureV);
+
+		if (!TexU.IsNearlyZero() && !TexV.IsNearlyZero())
+		{
+			ComputeUVAxesFromPoly(
+				FVector(Poly.TextureU), FVector(Poly.TextureV), FVector(Poly.Base),
+				Normal, BrushTransform, UAxis, VAxis);
+		}
+		else
+		{
+			GetDefaultUVAxes(Normal, UAxis, VAxis);
+		}
 
 		FVMFKeyValues Side(TEXT("side"));
 		Side.AddProperty(TEXT("id"), SideIdCounter++);
 		Side.AddProperty(TEXT("plane"), PlaneStr);
-		Side.AddProperty(TEXT("material"), DefaultMaterial);
+		Side.AddProperty(TEXT("material"), MaterialPath);
 		Side.AddProperty(TEXT("uaxis"), UAxis);
 		Side.AddProperty(TEXT("vaxis"), VAxis);
 		Side.AddProperty(TEXT("rotation"), 0);
@@ -159,8 +195,6 @@ bool FBrushConverter::ValidateConvexity(
 	const TArray<TArray<FVector>>& FaceVertices,
 	float Tolerance)
 {
-	// For each plane, every vertex of every OTHER face must be
-	// on the plane or behind it (negative side).
 	for (int32 PlaneIdx = 0; PlaneIdx < Planes.Num(); ++PlaneIdx)
 	{
 		const FPlane& Plane = Planes[PlaneIdx];
@@ -251,20 +285,77 @@ void FBrushConverter::GetDefaultUVAxes(
 {
 	if (FMath::Abs(Normal.Z) > 0.5)
 	{
-		// Top or bottom face
 		OutUAxis = TEXT("[1 0 0 0] 0.25");
 		OutVAxis = TEXT("[0 -1 0 0] 0.25");
 	}
 	else if (FMath::Abs(Normal.Y) > 0.5)
 	{
-		// Front or back face
 		OutUAxis = TEXT("[1 0 0 0] 0.25");
 		OutVAxis = TEXT("[0 0 -1 0] 0.25");
 	}
 	else
 	{
-		// Left or right face
 		OutUAxis = TEXT("[0 1 0 0] 0.25");
 		OutVAxis = TEXT("[0 0 -1 0] 0.25");
 	}
+}
+
+void FBrushConverter::ComputeUVAxesFromPoly(
+	const FVector& TextureU,
+	const FVector& TextureV,
+	const FVector& TextureBase,
+	const FVector& FaceNormal,
+	const FTransform& BrushTransform,
+	FString& OutUAxis,
+	FString& OutVAxis)
+{
+	// UE's FPoly stores TextureU and TextureV as direction vectors
+	// in local space. We need to:
+	// 1. Transform to world space
+	// 2. Convert to Source coordinates (negate Y)
+	// 3. Compute offset from texture base point
+	// 4. Format as Source uaxis/vaxis: "[Ux Uy Uz offset] scale"
+
+	// Transform texture axes to world space (direction only, no translation)
+	FVector WorldU = BrushTransform.TransformVectorNoScale(TextureU);
+	FVector WorldV = BrushTransform.TransformVectorNoScale(TextureV);
+	FVector WorldBase = BrushTransform.TransformPosition(TextureBase);
+
+	// Convert to Source coordinate system
+	FVector SourceU(WorldU.X, -WorldU.Y, WorldU.Z);
+	FVector SourceV(WorldV.X, -WorldV.Y, WorldV.Z);
+	FVector SourceBase = FSourceCoord::UEToSource(WorldBase);
+
+	// Source uaxis/vaxis format: [Ux Uy Uz offset] scale
+	// The texture axes need to be normalized, with the length encoding the scale.
+	// Source scale = 1.0 / (texels_per_unit), default 0.25 = 4 texels per Source unit.
+	// UE's TextureU/V vectors encode direction and scale together.
+
+	double ULen = SourceU.Size();
+	double VLen = SourceV.Size();
+
+	// Avoid division by zero
+	if (ULen < KINDA_SMALL_NUMBER || VLen < KINDA_SMALL_NUMBER)
+	{
+		GetDefaultUVAxes(FaceNormal, OutUAxis, OutVAxis);
+		return;
+	}
+
+	FVector UDir = SourceU / ULen;
+	FVector VDir = SourceV / VLen;
+
+	// Scale: Source uses texels-per-world-unit inverted.
+	// UE TextureU length is typically 1/TextureSize, so we derive scale from it.
+	// Default to 0.25 if the length doesn't make sense.
+	double UScale = 0.25;
+	double VScale = 0.25;
+
+	// Compute texture offset: dot product of base point with texture axis
+	double UOffset = FVector::DotProduct(SourceBase, UDir);
+	double VOffset = FVector::DotProduct(SourceBase, VDir);
+
+	OutUAxis = FString::Printf(TEXT("[%g %g %g %g] %g"),
+		UDir.X, UDir.Y, UDir.Z, UOffset, UScale);
+	OutVAxis = FString::Printf(TEXT("[%g %g %g %g] %g"),
+		VDir.X, VDir.Y, VDir.Z, VOffset, VScale);
 }
