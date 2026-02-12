@@ -214,6 +214,11 @@ FReply SSourceEntityPalette::OnSpawnEntity(TSharedPtr<FEntityPaletteEntry> Entry
 		NewActor->SourceClassname = Entry->ClassName;
 		NewActor->SetActorLabel(Entry->ClassName);
 
+#if WITH_EDITORONLY_DATA
+		// Update editor sprite based on classname
+		NewActor->UpdateEditorSprite();
+#endif
+
 		// Select the newly spawned actor
 		GEditor->SelectNone(true, true, false);
 		GEditor->SelectActor(NewActor, true, true, true);

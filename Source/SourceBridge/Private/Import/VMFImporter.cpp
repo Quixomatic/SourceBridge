@@ -970,6 +970,11 @@ void FVMFImporter::ApplyEntityProperties(ASourceEntityActor* Entity, const FVMFK
 			}
 		}
 	}
+
+#if WITH_EDITORONLY_DATA
+	// Update editor sprite based on classname
+	Entity->UpdateEditorSprite();
+#endif
 }
 
 // ---- Parentname Resolution ----

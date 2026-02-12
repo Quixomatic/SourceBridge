@@ -30,4 +30,5 @@ private:
 	TSharedPtr<class FAutoConsoleCommand> AnalyzeVisCommand;
 	TSharedPtr<class FAutoConsoleCommand> ImportVMFCommand;
 	TSharedPtr<class FAutoConsoleCommand> ImportBSPCommand;
+	TSharedPtr<class FAutoConsoleCommand> PlayTestCommand;
 };

@@ -10,6 +10,8 @@ CLAUDE.md
 # To store the Unreal Engine Test Project
 /Project
 
+Resources/tools/bspsrc
+
 # UE generated
 Binaries/
 Intermediate/

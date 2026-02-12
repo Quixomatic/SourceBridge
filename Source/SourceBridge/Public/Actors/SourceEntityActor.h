@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "Components/BillboardComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "ProceduralMeshComponent.h"
 #include "SourceEntityActor.generated.h"
@@ -70,6 +71,7 @@ class SOURCEBRIDGE_API ASourceEntityActor : public AActor
 
 public:
 	ASourceEntityActor();
+	virtual void BeginPlay() override;
 
 	/** Source engine classname (e.g., "light", "info_player_terrorist"). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Source Entity")
@@ -90,6 +92,16 @@ public:
 	/** Spawnflags bitmask. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Source Entity")
 	int32 SpawnFlags = 0;
+
+#if WITH_EDITORONLY_DATA
+	/** Update the editor billboard sprite based on SourceClassname prefix. */
+	void UpdateEditorSprite();
+
+protected:
+	/** Billboard sprite component for editor visualization. */
+	UPROPERTY()
+	TObjectPtr<UBillboardComponent> SpriteComponent;
+#endif
 };
 
 /**
@@ -256,6 +268,7 @@ class SOURCEBRIDGE_API ASourceBrushEntity : public ASourceEntityActor
 
 public:
 	ASourceBrushEntity();
+	virtual void BeginPlay() override;
 
 	/** Procedural mesh components for each solid in this brush entity. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Source Brush Entity")

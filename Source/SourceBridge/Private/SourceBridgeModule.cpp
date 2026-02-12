@@ -13,6 +13,7 @@
 #include "UI/SourceEntityDetailCustomization.h"
 #include "UI/SourceEntityPalette.h"
 #include "UI/VMFPreview.h"
+#include "Runtime/SourceBridgeGameMode.h"
 #include "HAL/PlatformFilemanager.h"
 #include "Misc/FileHelper.h"
 #include "Engine/World.h"
@@ -465,6 +466,31 @@ void FSourceBridgeModule::StartupModule()
 		})
 	);
 
+	PlayTestCommand = MakeShared<FAutoConsoleCommand>(
+		TEXT("SourceBridge.PlayTest"),
+		TEXT("Start PIE using Source spawn points. Usage: SourceBridge.PlayTest [T|CT]"),
+		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+		{
+			UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+			if (!World)
+			{
+				UE_LOG(LogTemp, Error, TEXT("SourceBridge: No editor world available"));
+				return;
+			}
+
+			// Set the game mode override on the current world
+			World->GetWorldSettings()->DefaultGameMode = ASourceBridgeGameMode::StaticClass();
+
+			UE_LOG(LogTemp, Log, TEXT("SourceBridge: Game mode set to SourceBridgeGameMode. Use Play (Alt+P) to test."));
+			UE_LOG(LogTemp, Log, TEXT("SourceBridge: Spawns at Source T/CT spawn points with proper tool texture visibility."));
+
+			if (Args.Num() > 0)
+			{
+				UE_LOG(LogTemp, Log, TEXT("SourceBridge: Team preference '%s' — set in World Settings > Game Mode > Preferred Team"), *Args[0]);
+			}
+		})
+	);
+
 	// Auto-load FGD from Resources directory if present
 	FString PluginFGDPath = FPaths::ProjectPluginsDir() / TEXT("SourceBridge") / TEXT("Resources") / TEXT("cstrike.fgd");
 	if (!FPaths::FileExists(PluginFGDPath))
@@ -496,6 +522,7 @@ void FSourceBridgeModule::ShutdownModule()
 	AnalyzeVisCommand.Reset();
 	ImportVMFCommand.Reset();
 	ImportBSPCommand.Reset();
+	PlayTestCommand.Reset();
 }
 
 #undef LOCTEXT_NAMESPACE
