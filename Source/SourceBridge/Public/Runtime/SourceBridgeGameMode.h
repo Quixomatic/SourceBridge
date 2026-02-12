@@ -39,6 +39,8 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Source Spawns")
 	FString SpecificSpawnName;
 
+	virtual void BeginPlay() override;
+
 protected:
 	virtual AActor* ChoosePlayerStart_Implementation(AController* Player) override;
 };
@@ -63,9 +65,17 @@ public:
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Camera")
 	TObjectPtr<UCameraComponent> FirstPersonCamera;
 
+	/** Toggle noclip (fly through walls). Press V in PIE. */
+	void ToggleNoclip();
+
 private:
 	void MoveForward(float Value);
 	void MoveRight(float Value);
+	void MoveUp(float Value);
 	void Turn(float Value);
 	void LookUp(float Value);
+
+	bool bNoclip = false;
+	float WalkSpeed = 500.0f;
+	float NoclipSpeed = 1200.0f;
 };

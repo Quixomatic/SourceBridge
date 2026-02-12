@@ -4,6 +4,7 @@
 #include "Import/ModelImporter.h"
 #include "Import/MDLReader.h"
 #include "Actors/SourceEntityActor.h"
+#include "Runtime/SourceBridgeGameMode.h"
 #include "Entities/EntityIOConnection.h"
 #include "Engine/Brush.h"
 #include "Engine/Polys.h"
@@ -149,6 +150,13 @@ FVMFImportResult FVMFImporter::ImportBlocks(const TArray<FVMFKeyValues>& Blocks,
 	if ((Result.BrushesImported > 0 || Result.EntitiesImported > 0) && GEditor)
 	{
 		GEditor->RedrawLevelEditingViewports(true);
+
+		// Auto-set GameMode so Alt+P just works (Source spawns, tool texture hiding, etc.)
+		if (World->GetWorldSettings())
+		{
+			World->GetWorldSettings()->DefaultGameMode = ASourceBridgeGameMode::StaticClass();
+			UE_LOG(LogTemp, Log, TEXT("VMFImporter: Auto-set GameMode to SourceBridgeGameMode for PIE testing"));
+		}
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("VMFImporter: Imported %d brushes, %d entities (%d warnings)"),
