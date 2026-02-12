@@ -848,8 +848,11 @@ void FMaterialImporter::ClearCache()
 {
 	MaterialCache.Empty();
 	TextureInfoCache.Empty();
-	AdditionalSearchPaths.Empty();
-	VPKArchives.Empty();
+	// NOTE: Do NOT clear AdditionalSearchPaths or VPKArchives here.
+	// Those are session-level configuration set by SetupGameSearchPaths(),
+	// which is expensive (opens/parses VPK directory files). ClearCache()
+	// is called per-import (e.g., by VMFImporter::ImportBlocks) and should
+	// only reset transient per-import state like resolved materials.
 	TextureBaseMaterial = nullptr;
 	MaskedBaseMaterial = nullptr;
 	ColorBaseMaterial = nullptr;
