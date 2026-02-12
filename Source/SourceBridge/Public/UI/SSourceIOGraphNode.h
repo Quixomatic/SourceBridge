@@ -31,9 +31,7 @@ public:
 private:
 	USourceIOGraphNode* IONode = nullptr;
 
-	/** Pin containers for custom layout */
-	TSharedPtr<SVerticalBox> LeftPinBox;
-	TSharedPtr<SVerticalBox> RightPinBox;
+	/** Pin containers - uses base class LeftNodeBox/RightNodeBox for pin geometry */
 	TSharedPtr<SVerticalBox> PropertiesBox;
 	TSharedPtr<SVerticalBox> ConnectionsBox;
 

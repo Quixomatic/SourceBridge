@@ -66,9 +66,7 @@ void SSourceIOGraphNode::UpdateGraphNode()
 	FString TitleStr = IONode->CachedClassname;
 	FString SubtitleStr = IONode->CachedTargetName.IsEmpty() ? TEXT("") : FString::Printf(TEXT("\"%s\""), *IONode->CachedTargetName);
 
-	// Create pin boxes
-	LeftPinBox = SNew(SVerticalBox);
-	RightPinBox = SNew(SVerticalBox);
+	// Create containers using base class members (critical for wire drawing)
 	PropertiesBox = SNew(SVerticalBox);
 	ConnectionsBox = SNew(SVerticalBox);
 
@@ -128,12 +126,12 @@ void SSourceIOGraphNode::UpdateGraphNode()
 				[
 					SNew(SHorizontalBox)
 
-					// Left pin column (inputs)
+					// Left pin column (inputs) - uses base class LeftNodeBox
 					+ SHorizontalBox::Slot()
 					.AutoWidth()
 					.VAlign(VAlign_Top)
 					[
-						LeftPinBox.ToSharedRef()
+						SAssignNew(LeftNodeBox, SVerticalBox)
 					]
 
 					// Spacer
@@ -144,13 +142,13 @@ void SSourceIOGraphNode::UpdateGraphNode()
 						SNullWidget::NullWidget
 					]
 
-					// Right pin column (outputs)
+					// Right pin column (outputs) - uses base class RightNodeBox
 					+ SHorizontalBox::Slot()
 					.AutoWidth()
 					.VAlign(VAlign_Top)
 					.HAlign(HAlign_Right)
 					[
-						RightPinBox.ToSharedRef()
+						SAssignNew(RightNodeBox, SVerticalBox)
 					]
 				]
 			]
@@ -259,23 +257,29 @@ void SSourceIOGraphNode::AddPin(const TSharedRef<SGraphPin>& PinToAdd)
 
 	if (PinToAdd->GetDirection() == EGPD_Input)
 	{
-		LeftPinBox->AddSlot()
-			.AutoHeight()
-			.Padding(2, 1)
-			[
-				PinToAdd
-			];
+		if (LeftNodeBox.IsValid())
+		{
+			LeftNodeBox->AddSlot()
+				.AutoHeight()
+				.Padding(2, 1)
+				[
+					PinToAdd
+				];
+		}
 		InputPins.Add(PinToAdd);
 	}
 	else
 	{
-		RightPinBox->AddSlot()
-			.AutoHeight()
-			.HAlign(HAlign_Right)
-			.Padding(2, 1)
-			[
-				PinToAdd
-			];
+		if (RightNodeBox.IsValid())
+		{
+			RightNodeBox->AddSlot()
+				.AutoHeight()
+				.HAlign(HAlign_Right)
+				.Padding(2, 1)
+				[
+					PinToAdd
+				];
+		}
 		OutputPins.Add(PinToAdd);
 	}
 }
@@ -553,12 +557,6 @@ TSharedRef<SWidget> SSourceIOGraphNode::CreateConnectionRowWidget(
 
 	FString Summary = FString::Printf(TEXT("%s -> %s.%s"),
 		*Conn.OutputName, *Conn.TargetEntity, *Conn.InputName);
-	FString Detail = FString::Printf(TEXT("delay: %.1f, refire: %d"),
-		Conn.Delay, Conn.RefireCount);
-	if (!Conn.Parameter.IsEmpty())
-	{
-		Detail += FString::Printf(TEXT(", param: %s"), *Conn.Parameter);
-	}
 
 	// Capture values for editing
 	FString OutputName = Conn.OutputName;
@@ -601,7 +599,6 @@ TSharedRef<SWidget> SSourceIOGraphNode::CreateConnectionRowWidget(
 						{
 							A->Modify();
 							A->Tags.RemoveAt(TagIndex);
-							// Rebuild connections section
 							BuildConnectionWidgets();
 						}
 					}
@@ -616,7 +613,7 @@ TSharedRef<SWidget> SSourceIOGraphNode::CreateConnectionRowWidget(
 			]
 		]
 
-		// Detail line: delay, refire, param (editable)
+		// Detail line: delay, refire (editable)
 		+ SVerticalBox::Slot()
 		.AutoHeight()
 		.Padding(8, 0, 0, 2)
@@ -693,7 +690,7 @@ TSharedRef<SWidget> SSourceIOGraphNode::CreateConnectionRowWidget(
 }
 
 // ============================================================================
-// Tick — refresh connection widgets when io: tags change
+// Tick
 // ============================================================================
 
 void SSourceIOGraphNode::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
