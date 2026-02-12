@@ -179,10 +179,20 @@ FVMTParsedMaterial FMaterialImporter::ParseVMT(const FString& VMTContent)
 					Result.Parameters.Add(Key.ToLower(), Value);
 				}
 			}
+			else if (*Ptr == '"')
+			{
+				// Quoted string at non-top depth - consume it to avoid infinite loop
+				ReadQuoted();
+			}
 			else if (*Ptr)
 			{
 				// Unknown token at non-top depth, skip
-				ReadToken();
+				FString Tok = ReadToken();
+				if (Tok.IsEmpty())
+				{
+					// Safety: skip character if nothing consumed
+					Ptr++;
+				}
 			}
 		}
 	}
