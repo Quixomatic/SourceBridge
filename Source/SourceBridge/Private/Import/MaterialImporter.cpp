@@ -448,13 +448,13 @@ UMaterialInterface* FMaterialImporter::CreateMaterialFromVMT(const FString& Sour
 	}
 	SearchRoots.Append(AdditionalSearchPaths);
 
-	// Search for VMT file across all disk paths
+	// Search for VMT: exact disk path (fast) → VPK (fast) → case-insensitive disk (slow, last resort)
 	FString VMTFullPath;
 	FString VMTRelPath = TEXT("materials") / SourceMaterialPath + TEXT(".vmt");
 
+	// 1. Exact path on disk
 	for (const FString& Root : SearchRoots)
 	{
-		// Direct path check
 		FString CandidatePath = Root / VMTRelPath;
 		CandidatePath = CandidatePath.Replace(TEXT("\\"), TEXT("/"));
 
@@ -463,45 +463,57 @@ UMaterialInterface* FMaterialImporter::CreateMaterialFromVMT(const FString& Sour
 			VMTFullPath = CandidatePath;
 			break;
 		}
-
-		// Case-insensitive fallback
-		FString MaterialsDir = Root / TEXT("materials");
-		if (!FPaths::DirectoryExists(MaterialsDir)) continue;
-
-		FString SearchPath = SourceMaterialPath + TEXT(".vmt");
-		SearchPath = SearchPath.Replace(TEXT("\\"), TEXT("/"));
-
-		TArray<FString> AllVMTs;
-		IFileManager::Get().FindFilesRecursive(AllVMTs, *MaterialsDir, TEXT("*.vmt"), true, false);
-
-		for (const FString& FoundVMT : AllVMTs)
-		{
-			FString RelPath = FoundVMT;
-			FPaths::MakePathRelativeTo(RelPath, *(MaterialsDir + TEXT("/")));
-			RelPath = RelPath.Replace(TEXT("\\"), TEXT("/"));
-
-			if (RelPath.Equals(SearchPath, ESearchCase::IgnoreCase))
-			{
-				VMTFullPath = FoundVMT;
-				break;
-			}
-		}
-
-		if (!VMTFullPath.IsEmpty()) break;
 	}
 
-	// If not found on disk, try VPK archives
+	// 2. VPK archives (fast hash lookup)
 	FVMTParsedMaterial VMTData;
 	if (VMTFullPath.IsEmpty())
 	{
 		FString VMTContent = FindVMTInVPK(SourceMaterialPath);
-		if (VMTContent.IsEmpty())
+		if (!VMTContent.IsEmpty())
+		{
+			VMTData = ParseVMT(VMTContent);
+		}
+	}
+
+	// 3. Case-insensitive disk search (slow recursive scan, last resort)
+	if (VMTFullPath.IsEmpty() && VMTData.ShaderName.IsEmpty())
+	{
+		FString SearchPath = SourceMaterialPath + TEXT(".vmt");
+		SearchPath = SearchPath.Replace(TEXT("\\"), TEXT("/"));
+
+		for (const FString& Root : SearchRoots)
+		{
+			FString MaterialsDir = Root / TEXT("materials");
+			if (!FPaths::DirectoryExists(MaterialsDir)) continue;
+
+			TArray<FString> AllVMTs;
+			IFileManager::Get().FindFilesRecursive(AllVMTs, *MaterialsDir, TEXT("*.vmt"), true, false);
+
+			for (const FString& FoundVMT : AllVMTs)
+			{
+				FString RelPath = FoundVMT;
+				FPaths::MakePathRelativeTo(RelPath, *(MaterialsDir + TEXT("/")));
+				RelPath = RelPath.Replace(TEXT("\\"), TEXT("/"));
+
+				if (RelPath.Equals(SearchPath, ESearchCase::IgnoreCase))
+				{
+					VMTFullPath = FoundVMT;
+					break;
+				}
+			}
+
+			if (!VMTFullPath.IsEmpty()) break;
+		}
+
+		if (VMTFullPath.IsEmpty())
 		{
 			return nullptr;
 		}
-		VMTData = ParseVMT(VMTContent);
 	}
-	else
+
+	// Parse from disk if not already parsed from VPK
+	if (!VMTFullPath.IsEmpty())
 	{
 		VMTData = ParseVMTFile(VMTFullPath);
 	}
@@ -652,11 +664,12 @@ UTexture2D* FMaterialImporter::FindAndLoadVTF(const FString& TexturePath)
 	}
 	SearchRoots.Append(AdditionalSearchPaths);
 
+	// Search for VTF: exact disk path (fast) → VPK (fast) → case-insensitive disk (slow, last resort)
 	FString VTFRelPath = TEXT("materials") / TexturePath + TEXT(".vtf");
 
+	// 1. Exact path on disk
 	for (const FString& Root : SearchRoots)
 	{
-		// Direct path check first
 		FString VTFFullPath = Root / VTFRelPath;
 		VTFFullPath = VTFFullPath.Replace(TEXT("\\"), TEXT("/"));
 
@@ -665,13 +678,23 @@ UTexture2D* FMaterialImporter::FindAndLoadVTF(const FString& TexturePath)
 			UE_LOG(LogTemp, Verbose, TEXT("MaterialImporter: Found VTF at: %s"), *VTFFullPath);
 			return FVTFReader::LoadVTF(VTFFullPath);
 		}
+	}
 
-		// Case-insensitive fallback search
+	// 2. VPK archives (fast hash lookup)
+	UTexture2D* VPKTexture = FindAndLoadVTFFromVPK(TexturePath);
+	if (VPKTexture)
+	{
+		return VPKTexture;
+	}
+
+	// 3. Case-insensitive disk search (slow recursive scan, last resort)
+	FString SearchPath = TexturePath + TEXT(".vtf");
+	SearchPath = SearchPath.Replace(TEXT("\\"), TEXT("/"));
+
+	for (const FString& Root : SearchRoots)
+	{
 		FString MaterialsDir = Root / TEXT("materials");
 		if (!FPaths::DirectoryExists(MaterialsDir)) continue;
-
-		FString SearchPath = TexturePath + TEXT(".vtf");
-		SearchPath = SearchPath.Replace(TEXT("\\"), TEXT("/"));
 
 		TArray<FString> AllVTFs;
 		IFileManager::Get().FindFilesRecursive(AllVTFs, *MaterialsDir, TEXT("*.vtf"), true, false);
@@ -688,13 +711,6 @@ UTexture2D* FMaterialImporter::FindAndLoadVTF(const FString& TexturePath)
 				return FVTFReader::LoadVTF(FoundVTF);
 			}
 		}
-	}
-
-	// Fallback: try VPK archives
-	UTexture2D* VPKTexture = FindAndLoadVTFFromVPK(TexturePath);
-	if (VPKTexture)
-	{
-		return VPKTexture;
 	}
 
 	UE_LOG(LogTemp, Verbose, TEXT("MaterialImporter: VTF not found for '%s' (searched %d paths + %d VPKs)"),
