@@ -29,6 +29,9 @@ public:
 	/** Check if the VPK is open and parsed. */
 	bool IsOpen() const { return bIsOpen; }
 
+	/** Log a sample of entries that match a filter. For debugging. */
+	void LogEntriesMatching(const FString& Filter, int32 MaxCount = 20) const;
+
 private:
 	struct FVPKEntry
 	{

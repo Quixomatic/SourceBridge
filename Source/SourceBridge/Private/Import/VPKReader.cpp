@@ -279,3 +279,23 @@ bool FVPKReader::ReadFile(const FString& FilePath, TArray<uint8>& OutData) const
 
 	return true;
 }
+
+void FVPKReader::LogEntriesMatching(const FString& Filter, int32 MaxCount) const
+{
+	FString FilterLower = Filter.ToLower();
+	int32 Count = 0;
+	for (const auto& Pair : Entries)
+	{
+		if (Pair.Key.Contains(FilterLower))
+		{
+			const FVPKEntry& E = Pair.Value;
+			UE_LOG(LogTemp, Log, TEXT("VPKReader:   [%s] archive=%d preload=%d offset=%u len=%u"),
+				*Pair.Key, E.ArchiveIndex, E.PreloadBytes, E.EntryOffset, E.EntryLength);
+			if (++Count >= MaxCount) break;
+		}
+	}
+	if (Count == 0)
+	{
+		UE_LOG(LogTemp, Log, TEXT("VPKReader:   No entries matching '%s'"), *Filter);
+	}
+}

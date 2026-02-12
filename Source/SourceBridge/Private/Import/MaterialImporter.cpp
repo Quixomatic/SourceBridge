@@ -259,6 +259,17 @@ void FMaterialImporter::SetupGameSearchPaths(const FString& GameName)
 
 	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: %d additional search paths + %d VPK archives configured"),
 		AdditionalSearchPaths.Num(), VPKArchives.Num());
+
+	// Debug: dump tool texture entries from VPK archives
+	if (VPKArchives.Num() > 0)
+	{
+		UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Searching VPK archives for tool textures..."));
+		for (int32 i = 0; i < VPKArchives.Num(); i++)
+		{
+			UE_LOG(LogTemp, Log, TEXT("MaterialImporter: VPK[%d] tool texture entries:"), i);
+			VPKArchives[i]->LogEntriesMatching(TEXT("tools/tools"), 10);
+		}
+	}
 }
 
 // ---- Material Resolution ----
@@ -299,21 +310,34 @@ UMaterialInterface* FMaterialImporter::ResolveSourceMaterial(const FString& Sour
 
 	UMaterialInterface* Material = nullptr;
 
+	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Resolving '%s' (searchPath=%s, additionalPaths=%d, VPKs=%d)"),
+		*SourceMaterialPath, *AssetSearchPath, AdditionalSearchPaths.Num(), VPKArchives.Num());
+
 	// 1. Try to create from extracted VMT file or VPK archives
 	if (!AssetSearchPath.IsEmpty() || AdditionalSearchPaths.Num() > 0 || VPKArchives.Num() > 0)
 	{
 		Material = CreateMaterialFromVMT(SourceMaterialPath);
+		if (Material)
+		{
+			UE_LOG(LogTemp, Log, TEXT("MaterialImporter: '%s' resolved via VMT/VPK"), *SourceMaterialPath);
+		}
 	}
 
 	// 2. Try to find existing UE material in asset registry
 	if (!Material)
 	{
 		Material = FindExistingMaterial(SourceMaterialPath);
+		if (Material)
+		{
+			UE_LOG(LogTemp, Log, TEXT("MaterialImporter: '%s' resolved via asset registry"), *SourceMaterialPath);
+		}
 	}
 
 	// 3. Create placeholder if not found
 	if (!Material)
 	{
+		UE_LOG(LogTemp, Warning, TEXT("MaterialImporter: '%s' not found in VMT/VPK/registry, creating placeholder"),
+			*SourceMaterialPath);
 		Material = CreatePlaceholderMaterial(SourceMaterialPath);
 	}
 
@@ -323,7 +347,8 @@ UMaterialInterface* FMaterialImporter::ResolveSourceMaterial(const FString& Sour
 	}
 	else
 	{
-		UE_LOG(LogTemp, Warning, TEXT("MaterialImporter: Failed to resolve material '%s'"), *SourceMaterialPath);
+		UE_LOG(LogTemp, Warning, TEXT("MaterialImporter: FAILED to resolve material '%s' (returned nullptr)"),
+			*SourceMaterialPath);
 	}
 
 	return Material;
@@ -743,25 +768,46 @@ UMaterialInstanceDynamic* FMaterialImporter::CreateColorMID(const FLinearColor& 
 
 FString FMaterialImporter::FindVMTInVPK(const FString& SourceMaterialPath)
 {
-	if (VPKArchives.Num() == 0) return FString();
+	if (VPKArchives.Num() == 0)
+	{
+		UE_LOG(LogTemp, Log, TEXT("MaterialImporter: FindVMTInVPK('%s') - no VPK archives open"), *SourceMaterialPath);
+		return FString();
+	}
 
 	// VPK paths are lowercase with forward slashes, no leading slash
 	FString VPKPath = (TEXT("materials/") + SourceMaterialPath + TEXT(".vmt")).ToLower();
 	VPKPath = VPKPath.Replace(TEXT("\\"), TEXT("/"));
 
-	for (const TSharedPtr<FVPKReader>& VPK : VPKArchives)
+	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: FindVMTInVPK searching for '%s' in %d archives"),
+		*VPKPath, VPKArchives.Num());
+
+	for (int32 i = 0; i < VPKArchives.Num(); i++)
 	{
-		TArray<uint8> Data;
-		if (VPK->ReadFile(VPKPath, Data))
+		const TSharedPtr<FVPKReader>& VPK = VPKArchives[i];
+		bool bContains = VPK->Contains(VPKPath);
+		UE_LOG(LogTemp, Log, TEXT("MaterialImporter:   VPK[%d] (%d entries) Contains='%s': %s"),
+			i, VPK->GetEntryCount(), *VPKPath, bContains ? TEXT("YES") : TEXT("no"));
+
+		if (bContains)
 		{
-			// Convert raw bytes to FString (VMT files are ASCII/UTF-8)
-			FString Content;
-			FFileHelper::BufferToString(Content, Data.GetData(), Data.Num());
-			UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Found VMT in VPK: %s"), *VPKPath);
-			return Content;
+			TArray<uint8> Data;
+			if (VPK->ReadFile(VPKPath, Data))
+			{
+				// Convert raw bytes to FString (VMT files are ASCII/UTF-8)
+				FString Content;
+				FFileHelper::BufferToString(Content, Data.GetData(), Data.Num());
+				UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Found VMT in VPK: %s (%d bytes)"),
+					*VPKPath, Data.Num());
+				return Content;
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("MaterialImporter: VPK Contains '%s' but ReadFile failed!"), *VPKPath);
+			}
 		}
 	}
 
+	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: VMT not found in any VPK: %s"), *VPKPath);
 	return FString();
 }
 
@@ -773,17 +819,28 @@ UTexture2D* FMaterialImporter::FindAndLoadVTFFromVPK(const FString& TexturePath)
 	FString VPKPath = (TEXT("materials/") + TexturePath + TEXT(".vtf")).ToLower();
 	VPKPath = VPKPath.Replace(TEXT("\\"), TEXT("/"));
 
-	for (const TSharedPtr<FVPKReader>& VPK : VPKArchives)
+	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: FindAndLoadVTFFromVPK searching for '%s'"), *VPKPath);
+
+	for (int32 i = 0; i < VPKArchives.Num(); i++)
 	{
-		TArray<uint8> Data;
-		if (VPK->ReadFile(VPKPath, Data))
+		const TSharedPtr<FVPKReader>& VPK = VPKArchives[i];
+		if (VPK->Contains(VPKPath))
 		{
-			UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Found VTF in VPK: %s (%d bytes)"),
-				*VPKPath, Data.Num());
-			return FVTFReader::LoadVTFFromMemory(Data, VPKPath);
+			TArray<uint8> Data;
+			if (VPK->ReadFile(VPKPath, Data))
+			{
+				UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Found VTF in VPK[%d]: %s (%d bytes)"),
+					i, *VPKPath, Data.Num());
+				return FVTFReader::LoadVTFFromMemory(Data, VPKPath);
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("MaterialImporter: VPK Contains VTF '%s' but ReadFile failed!"), *VPKPath);
+			}
 		}
 	}
 
+	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: VTF not found in any VPK: %s"), *VPKPath);
 	return nullptr;
 }
 
