@@ -232,12 +232,54 @@ FRotator FVMFImporter::ParseAngles(const FString& AnglesStr)
 	AnglesStr.ParseIntoArrayWS(Parts);
 	if (Parts.Num() >= 3)
 	{
-		// Source angles: pitch yaw roll
-		float Pitch = FCString::Atof(*Parts[0]);
-		float Yaw = FCString::Atof(*Parts[1]);
-		float Roll = FCString::Atof(*Parts[2]);
-		// Convert: negate yaw for handedness change
-		return FRotator(Pitch, -Yaw, Roll);
+		// Source VMF angles: "pitch yaw roll"
+		float SrcPitch = FCString::Atof(*Parts[0]);
+		float SrcYaw = FCString::Atof(*Parts[1]);
+		float SrcRoll = FCString::Atof(*Parts[2]);
+
+		// Source engine applies rotations via AngleMatrix in the order: Yaw → Pitch → Roll
+		// UE's FRotator decomposes differently, so we can't just copy Euler angles directly.
+		// Instead, build the rotation matrix using Source's convention, apply the Y-negate
+		// handedness conversion, and extract UE's FRotator from the result.
+
+		// Convert degrees to radians
+		float PitchRad = FMath::DegreesToRadians(SrcPitch);
+		float YawRad = FMath::DegreesToRadians(SrcYaw);
+		float RollRad = FMath::DegreesToRadians(SrcRoll);
+
+		// Source AngleMatrix: Yaw (Z), then Pitch (Y), then Roll (X)
+		// This matches Source SDK's AngleMatrix() function
+		float CP = FMath::Cos(PitchRad), SP = FMath::Sin(PitchRad);
+		float CY = FMath::Cos(YawRad), SY = FMath::Sin(YawRad);
+		float CR = FMath::Cos(RollRad), SR = FMath::Sin(RollRad);
+
+		// Source rotation matrix (from Source SDK AngleMatrix):
+		// Row 0 (forward):  CP*CY,  SR*SP*CY + CR*-SY,  CR*SP*CY + -SR*-SY
+		// Row 1 (left):     CP*SY,  SR*SP*SY + CR*CY,    CR*SP*SY + -SR*CY
+		// Row 2 (up):       -SP,    SR*CP,                CR*CP
+
+		// Convert to UE: negate Y axis (Source Y-left → UE Y-right)
+		// For a 3x3 rotation matrix, negating Y means: negate row 1 and column 1
+		// This is equivalent to: M_ue = Diag(1,-1,1) * M_src * Diag(1,-1,1)
+		// Column negate flips: M[r][1] → -M[r][1]
+		// Row negate flips:    M[1][c] → -M[1][c]
+		// M[1][1] gets negated twice → stays the same
+
+		FMatrix UEMat = FMatrix::Identity;
+		// Row 0 (forward)
+		UEMat.M[0][0] =  CP * CY;
+		UEMat.M[0][1] = -(SR * SP * CY + CR * (-SY));  // col 1 negated
+		UEMat.M[0][2] =  CR * SP * CY + (-SR) * (-SY);
+		// Row 1 (right = negated left) — entire row negated, then col 1 un-negated
+		UEMat.M[1][0] = -(CP * SY);                     // row 1 negated
+		UEMat.M[1][1] =  SR * SP * SY + CR * CY;        // row+col cancel
+		UEMat.M[1][2] = -(CR * SP * SY + (-SR) * CY);   // row 1 negated
+		// Row 2 (up)
+		UEMat.M[2][0] = -SP;
+		UEMat.M[2][1] = -(SR * CP);                     // col 1 negated
+		UEMat.M[2][2] =  CR * CP;
+
+		return UEMat.Rotator();
 	}
 	return FRotator::ZeroRotator;
 }
