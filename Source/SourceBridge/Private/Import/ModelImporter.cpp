@@ -216,6 +216,75 @@ bool FModelImporter::FindModelFiles(const FString& SourceModelPath,
 }
 
 // ============================================================================
+// Stock Model Detection & Disk Path Resolution
+// ============================================================================
+
+bool FModelImporter::IsStockModel(const FString& SourceModelPath)
+{
+	FString VPKPath = SourceModelPath.ToLower();
+	VPKPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+
+	for (const auto& VPK : VPKArchives)
+	{
+		if (VPK->Contains(VPKPath))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool FModelImporter::FindModelDiskPaths(const FString& SourceModelPath,
+	TMap<FString, FString>& OutFilePaths)
+{
+	FString BasePath = FPaths::ChangeExtension(SourceModelPath, TEXT(""));
+	FString NormBase = BasePath;
+	NormBase.ReplaceInline(TEXT("/"), TEXT("\\"));
+
+	// Extensions to search for
+	TArray<FString> Extensions = {
+		TEXT(".mdl"),
+		TEXT(".vvd"),
+		TEXT(".dx90.vtx"),
+		TEXT(".dx80.vtx"),
+		TEXT(".sw.vtx"),
+		TEXT(".phy")
+	};
+
+	auto FindOnDisk = [&](const FString& RelPath) -> FString
+	{
+		if (!AssetSearchPath.IsEmpty())
+		{
+			FString FullPath = AssetSearchPath / RelPath;
+			if (FPaths::FileExists(FullPath))
+				return FullPath;
+		}
+		for (const FString& SearchPath : AdditionalSearchPaths)
+		{
+			FString FullPath = SearchPath / RelPath;
+			if (FPaths::FileExists(FullPath))
+				return FullPath;
+		}
+		return FString();
+	};
+
+	bool bFoundMDL = false;
+	for (const FString& Ext : Extensions)
+	{
+		FString RelPath = NormBase + Ext;
+		FString DiskPath = FindOnDisk(RelPath);
+		if (!DiskPath.IsEmpty())
+		{
+			OutFilePaths.Add(Ext, DiskPath);
+			if (Ext == TEXT(".mdl"))
+				bFoundMDL = true;
+		}
+	}
+
+	return bFoundMDL;
+}
+
+// ============================================================================
 // Material Resolution
 // ============================================================================
 

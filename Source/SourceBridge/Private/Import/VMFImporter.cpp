@@ -707,6 +707,12 @@ bool FVMFImporter::ImportPointEntity(const FVMFKeyValues& EntityBlock, UWorld* W
 	FVector UEOrigin = SourceToUE(SourceOrigin, Settings.ScaleMultiplier);
 	FRotator UERotation = AnglesStr.IsEmpty() ? FRotator::ZeroRotator : ParseAngles(AnglesStr);
 
+	// prop_static stores pitch negated in BSP (and BSPSource-decompiled VMFs)
+	if (ClassName.Equals(TEXT("prop_static"), ESearchCase::IgnoreCase))
+	{
+		UERotation.Pitch = -UERotation.Pitch;
+	}
+
 	// Determine which actor class to spawn based on Source classname
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;

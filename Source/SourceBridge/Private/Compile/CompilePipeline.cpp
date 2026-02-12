@@ -178,6 +178,71 @@ FCompileResult FCompilePipeline::CompileModel(const FModelCompileSettings& Setti
 	return Result;
 }
 
+FCompileResult FCompilePipeline::PackCustomContent(
+	const FString& BSPPath,
+	const FString& ToolsDir,
+	const TMap<FString, FString>& FileList)
+{
+	FCompileResult Result;
+
+	if (FileList.Num() == 0)
+	{
+		Result.bSuccess = true;
+		Result.Output = TEXT("No custom content to pack.");
+		return Result;
+	}
+
+	FString BSPZipPath = ToolsDir / TEXT("bspzip.exe");
+	if (!FPaths::FileExists(BSPZipPath))
+	{
+		Result.ErrorMessage = FString::Printf(TEXT("bspzip not found at: %s"), *BSPZipPath);
+		return Result;
+	}
+
+	if (!FPaths::FileExists(BSPPath))
+	{
+		Result.ErrorMessage = FString::Printf(TEXT("BSP file not found: %s"), *BSPPath);
+		return Result;
+	}
+
+	// bspzip -addlist expects a text file with alternating lines:
+	// internal/path/file.ext
+	// C:\absolute\disk\path\file.ext
+	// internal/path/file2.ext
+	// C:\absolute\disk\path\file2.ext
+	FString ListContent;
+	for (const auto& Pair : FileList)
+	{
+		ListContent += Pair.Key + TEXT("\n");
+		ListContent += Pair.Value + TEXT("\n");
+	}
+
+	// Write the file list to a temp file next to the BSP
+	FString ListFilePath = FPaths::ChangeExtension(BSPPath, TEXT("")) + TEXT("_packlist.txt");
+	if (!FFileHelper::SaveStringToFile(ListContent, *ListFilePath))
+	{
+		Result.ErrorMessage = FString::Printf(TEXT("Failed to write pack list to: %s"), *ListFilePath);
+		return Result;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("SourceBridge: Packing %d files into BSP via bspzip"), FileList.Num());
+
+	FString Args = FString::Printf(TEXT("-addlist \"%s\" \"%s\" \"%s\""),
+		*BSPPath, *ListFilePath, *BSPPath);
+
+	Result = RunTool(BSPZipPath, Args, TEXT("bspzip"));
+
+	// Clean up temp file
+	IFileManager::Get().Delete(*ListFilePath);
+
+	if (Result.bSuccess)
+	{
+		UE_LOG(LogTemp, Log, TEXT("SourceBridge: Packed %d custom files into BSP"), FileList.Num());
+	}
+
+	return Result;
+}
+
 FCompileResult FCompilePipeline::RunTool(
 	const FString& ToolPath,
 	const FString& Arguments,

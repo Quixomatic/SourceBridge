@@ -4,6 +4,8 @@
 #include "Compile/CompilePipeline.h"
 #include "Models/SMDExporter.h"
 #include "Models/QCWriter.h"
+#include "Import/ModelImporter.h"
+#include "Actors/SourceEntityActor.h"
 #include "HAL/PlatformFilemanager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -187,6 +189,61 @@ FFullExportResult FFullExportPipeline::RunWithProgress(
 		}
 	}
 
+	// ---- Step 3b: Collect custom imported models (ASourceProp) ----
+	// These already have compiled .mdl/.vvd/.vtx/.phy files from import.
+	// We need to stage them for bspzip packing (stock models are skipped).
+	TMap<FString, FString> CustomContentFiles; // internal path → disk path
+	{
+		// Initialize model importer search paths for stock detection
+		FModelImporter::SetupGameSearchPaths(Settings.GameName);
+
+		TSet<FString> ProcessedModels; // avoid duplicates
+		for (TActorIterator<ASourceProp> It(World); It; ++It)
+		{
+			ASourceProp* Prop = *It;
+			if (!Prop || Prop->ModelPath.IsEmpty()) continue;
+
+			FString NormPath = Prop->ModelPath.ToLower();
+			NormPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+			if (ProcessedModels.Contains(NormPath)) continue;
+			ProcessedModels.Add(NormPath);
+
+			// Skip stock models that exist in game VPKs
+			if (FModelImporter::IsStockModel(NormPath))
+			{
+				UE_LOG(LogTemp, Verbose, TEXT("SourceBridge: Stock model (skipped): %s"), *NormPath);
+				continue;
+			}
+
+			// Find the model files on disk
+			TMap<FString, FString> DiskPaths;
+			if (FModelImporter::FindModelDiskPaths(NormPath, DiskPaths))
+			{
+				FString BasePath = FPaths::ChangeExtension(NormPath, TEXT(""));
+				for (const auto& FilePair : DiskPaths)
+				{
+					// Internal path: "models/foo/bar.mdl" etc.
+					FString InternalPath = BasePath + FilePair.Key;
+					InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+					CustomContentFiles.Add(InternalPath, FilePair.Value);
+				}
+				UE_LOG(LogTemp, Log, TEXT("SourceBridge: Custom model staged: %s (%d files)"),
+					*NormPath, DiskPaths.Num());
+			}
+			else
+			{
+				Result.Warnings.Add(FString::Printf(
+					TEXT("[Models] Custom model files not found on disk: %s"), *NormPath));
+			}
+		}
+
+		if (CustomContentFiles.Num() > 0)
+		{
+			UE_LOG(LogTemp, Log, TEXT("SourceBridge: %d custom content files staged for BSP packing"),
+				CustomContentFiles.Num());
+		}
+	}
+
 	// ---- Step 4: Export VMF ----
 	ReportProgress(TEXT("Exporting VMF..."), 0.4f);
 	UE_LOG(LogTemp, Log, TEXT("SourceBridge: Exporting scene to VMF..."));
@@ -255,6 +312,26 @@ FFullExportResult FFullExportPipeline::RunWithProgress(
 
 		Result.BSPPath = FPaths::ChangeExtension(Result.VMFPath, TEXT(".bsp"));
 		UE_LOG(LogTemp, Log, TEXT("SourceBridge: Compile completed in %.1f seconds."), Result.CompileSeconds);
+
+		// ---- Step 5b: Pack custom content into BSP via bspzip ----
+		if (CustomContentFiles.Num() > 0 && FPaths::FileExists(Result.BSPPath))
+		{
+			ReportProgress(TEXT("Packing custom content into BSP..."), 0.8f);
+			FCompileResult PackResult = FCompilePipeline::PackCustomContent(
+				Result.BSPPath, ToolsDir, CustomContentFiles);
+
+			if (PackResult.bSuccess)
+			{
+				UE_LOG(LogTemp, Log, TEXT("SourceBridge: Packed %d custom files into BSP"),
+					CustomContentFiles.Num());
+			}
+			else
+			{
+				Result.Warnings.Add(TEXT("[Pack] bspzip failed: ") + PackResult.ErrorMessage);
+				UE_LOG(LogTemp, Warning, TEXT("SourceBridge: bspzip failed: %s"),
+					*PackResult.ErrorMessage);
+			}
+		}
 	}
 
 	// ---- Step 6: Package distributable ----

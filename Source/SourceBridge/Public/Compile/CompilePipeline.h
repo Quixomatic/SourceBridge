@@ -77,6 +77,19 @@ public:
 	static FCompileResult CompileModel(const FModelCompileSettings& Settings);
 
 	/**
+	 * Pack custom content (models, materials) into a compiled BSP using bspzip.
+	 *
+	 * @param BSPPath Path to the compiled .bsp file
+	 * @param ToolsDir Path to Source SDK bin directory containing bspzip.exe
+	 * @param FileList Map of internal paths (e.g., "models/foo/bar.mdl") to absolute disk paths
+	 * @return Compile result
+	 */
+	static FCompileResult PackCustomContent(
+		const FString& BSPPath,
+		const FString& ToolsDir,
+		const TMap<FString, FString>& FileList);
+
+	/**
 	 * Try to auto-detect Source SDK tools in common Steam install paths.
 	 * Returns the path to the bin/ directory, or empty string if not found.
 	 */

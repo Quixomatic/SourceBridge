@@ -54,6 +54,25 @@ public:
 	/** Clear per-import transient state. Does NOT clear VPK archives. */
 	static void ClearCache();
 
+	/**
+	 * Check if a model exists in game VPK archives (i.e., is a stock game model).
+	 * Returns true if the MDL file is found in any VPK archive.
+	 * Must call SetupGameSearchPaths() first.
+	 */
+	static bool IsStockModel(const FString& SourceModelPath);
+
+	/**
+	 * Find the disk paths for a model's companion files (.mdl, .vvd, .vtx, .phy).
+	 * Only returns files found on disk (not from VPK archives).
+	 * Used by the export pipeline to collect custom model files for packaging.
+	 *
+	 * @param SourceModelPath Source-relative model path (e.g., "models/props/barrel.mdl")
+	 * @param OutFilePaths Map of extension → absolute disk path for each found file
+	 * @return true if at least the .mdl was found on disk
+	 */
+	static bool FindModelDiskPaths(const FString& SourceModelPath,
+		TMap<FString, FString>& OutFilePaths);
+
 private:
 	/** Cache of resolved models (Source path → UStaticMesh) */
 	static TMap<FString, UStaticMesh*> ModelCache;
