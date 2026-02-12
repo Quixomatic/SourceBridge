@@ -33,7 +33,8 @@ public class SourceBridge : ModuleRules
 			"ApplicationCore",
 			"DesktopPlatform",
 			"BSPUtils",
-			"ProceduralMeshComponent"
+			"ProceduralMeshComponent",
+			"ImageWrapper"
 		});
 	}
 }

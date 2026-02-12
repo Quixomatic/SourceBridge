@@ -6,7 +6,7 @@ class UTexture2D;
 
 /**
  * Reads Valve Texture Format (VTF) files and creates UTexture2D objects.
- * Handles DXT1, DXT5, BGRA8888, BGR888, RGB888, RGBA8888 formats.
+ * Handles DXT1, DXT3, DXT5, BGRA8888, BGR888, RGB888, RGBA8888 formats.
  * VTF format spec: https://developer.valvesoftware.com/wiki/Valve_Texture_Format
  */
 class SOURCEBRIDGE_API FVTFReader
@@ -17,6 +17,12 @@ public:
 
 	/** Load a VTF from raw bytes in memory. DebugName is used for log messages only. */
 	static UTexture2D* LoadVTFFromMemory(const TArray<uint8>& FileData, const FString& DebugName);
+
+	/** Enable/disable debug texture dumping. When enabled, all loaded VTFs are saved as PNGs. */
+	static bool bDebugDumpTextures;
+
+	/** Directory where debug PNGs are saved. Set automatically to Saved/SourceBridge/Debug/Textures/. */
+	static FString DebugDumpPath;
 
 private:
 	// VTF image format IDs (from VTF spec)
@@ -39,4 +45,16 @@ private:
 	/** Convert uncompressed pixel data to BGRA8888. */
 	static bool ConvertToBGRA8(const uint8* Src, int32 SrcSize, uint32 SrcFormat,
 		int32 Width, int32 Height, TArray<uint8>& OutBGRA);
+
+	/** Decompress DXT1 block data to BGRA8888 pixels. */
+	static bool DecompressDXT1(const uint8* Src, int32 Width, int32 Height, TArray<uint8>& OutBGRA);
+
+	/** Decompress DXT3 block data to BGRA8888 pixels. */
+	static bool DecompressDXT3(const uint8* Src, int32 Width, int32 Height, TArray<uint8>& OutBGRA);
+
+	/** Decompress DXT5 block data to BGRA8888 pixels. */
+	static bool DecompressDXT5(const uint8* Src, int32 Width, int32 Height, TArray<uint8>& OutBGRA);
+
+	/** Save BGRA pixel data as a PNG file. */
+	static void SaveBGRAAsPNG(const TArray<uint8>& BGRAData, int32 Width, int32 Height, const FString& FilePath);
 };

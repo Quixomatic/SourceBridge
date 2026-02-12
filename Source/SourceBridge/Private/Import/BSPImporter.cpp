@@ -1,6 +1,7 @@
 #include "Import/BSPImporter.h"
 #include "Import/VMFImporter.h"
 #include "Import/MaterialImporter.h"
+#include "Import/VTFReader.h"
 #include "UI/SourceBridgeSettings.h"
 #include "Misc/Paths.h"
 #include "HAL/PlatformProcess.h"
@@ -73,10 +74,16 @@ FVMFImportResult FBSPImporter::ImportFile(const FString& BSPPath, UWorld* World,
 	FString TargetGame = USourceBridgeSettings::Get()->TargetGame;
 	FMaterialImporter::SetupGameSearchPaths(TargetGame);
 
+	// Enable debug texture dump to save all VTFs as PNGs
+	FVTFReader::bDebugDumpTextures = true;
+	FVTFReader::DebugDumpPath = OutputDir / TEXT("Debug_Textures");
+
 	// Import the decompiled VMF with asset search path
 	FVMFImportSettings ImportSettings = Settings;
 	ImportSettings.AssetSearchPath = AssetSearchDir;
 	Result = FVMFImporter::ImportFile(VMFPath, World, ImportSettings);
+
+	FVTFReader::bDebugDumpTextures = false;
 
 	return Result;
 }

@@ -1,6 +1,13 @@
 #include "Import/VTFReader.h"
 #include "Misc/FileHelper.h"
 #include "Engine/Texture2D.h"
+#include "IImageWrapperModule.h"
+#include "IImageWrapper.h"
+#include "Misc/Paths.h"
+#include "HAL/PlatformFileManager.h"
+
+bool FVTFReader::bDebugDumpTextures = false;
+FString FVTFReader::DebugDumpPath;
 
 // VTF header is packed (no alignment padding between fields)
 #pragma pack(push, 1)
@@ -254,5 +261,273 @@ UTexture2D* FVTFReader::LoadVTFFromMemory(const TArray<uint8>& FileData, const F
 	Texture->Filter = TF_Bilinear;
 	Texture->LODGroup = TEXTUREGROUP_World;
 
+	// Debug dump: save every loaded VTF as PNG
+	if (bDebugDumpTextures)
+	{
+		TArray<uint8> DumpBGRA;
+		bool bDecompressed = false;
+
+		if (Format == VTF_DXT1)
+		{
+			bDecompressed = DecompressDXT1(MipData, Width, Height, DumpBGRA);
+		}
+		else if (Format == VTF_DXT3)
+		{
+			bDecompressed = DecompressDXT3(MipData, Width, Height, DumpBGRA);
+		}
+		else if (Format == VTF_DXT5)
+		{
+			bDecompressed = DecompressDXT5(MipData, Width, Height, DumpBGRA);
+		}
+		else
+		{
+			bDecompressed = ConvertToBGRA8(MipData, FullMipSize, Format, Width, Height, DumpBGRA);
+		}
+
+		if (bDecompressed)
+		{
+			if (DebugDumpPath.IsEmpty())
+			{
+				DebugDumpPath = FPaths::ProjectSavedDir() / TEXT("SourceBridge/Debug/Textures");
+			}
+
+			// Build filename from the debug name (strip path junk, keep material path structure)
+			FString SafeName = DebugName.Replace(TEXT("\\"), TEXT("/"));
+			// Try to extract just the material-relative path (e.g., "tools/toolstrigger")
+			int32 MaterialsIdx;
+			if (SafeName.FindLastChar('/', MaterialsIdx))
+			{
+				// Use last two path components as filename
+				FString Remaining = SafeName;
+				Remaining.ReplaceInline(TEXT("/"), TEXT("_"));
+				SafeName = Remaining;
+			}
+			SafeName = SafeName.Replace(TEXT("/"), TEXT("_")).Replace(TEXT(":"), TEXT(""));
+
+			FString PNGPath = DebugDumpPath / SafeName + TEXT(".png");
+			SaveBGRAAsPNG(DumpBGRA, Width, Height, PNGPath);
+			UE_LOG(LogTemp, Log, TEXT("VTFReader: Debug dump → %s (%dx%d, fmt=%d)"), *PNGPath, Width, Height, Format);
+		}
+	}
+
 	return Texture;
+}
+
+// ---- DXT Decompression ----
+
+static void DecodeDXTColor(uint16 Color565, uint8& R, uint8& G, uint8& B)
+{
+	R = ((Color565 >> 11) & 0x1F) * 255 / 31;
+	G = ((Color565 >> 5) & 0x3F) * 255 / 63;
+	B = (Color565 & 0x1F) * 255 / 31;
+}
+
+bool FVTFReader::DecompressDXT1(const uint8* Src, int32 Width, int32 Height, TArray<uint8>& OutBGRA)
+{
+	int32 BlocksX = FMath::Max(Width / 4, 1);
+	int32 BlocksY = FMath::Max(Height / 4, 1);
+	OutBGRA.SetNumZeroed(Width * Height * 4);
+
+	for (int32 BY = 0; BY < BlocksY; BY++)
+	{
+		for (int32 BX = 0; BX < BlocksX; BX++)
+		{
+			const uint8* Block = Src + (BY * BlocksX + BX) * 8;
+
+			uint16 C0 = Block[0] | (Block[1] << 8);
+			uint16 C1 = Block[2] | (Block[3] << 8);
+			uint32 LookupTable = Block[4] | (Block[5] << 8) | (Block[6] << 16) | (Block[7] << 24);
+
+			uint8 R[4], G[4], B[4], A[4];
+			DecodeDXTColor(C0, R[0], G[0], B[0]); A[0] = 255;
+			DecodeDXTColor(C1, R[1], G[1], B[1]); A[1] = 255;
+
+			if (C0 > C1)
+			{
+				R[2] = (2 * R[0] + R[1]) / 3; G[2] = (2 * G[0] + G[1]) / 3; B[2] = (2 * B[0] + B[1]) / 3; A[2] = 255;
+				R[3] = (R[0] + 2 * R[1]) / 3; G[3] = (G[0] + 2 * G[1]) / 3; B[3] = (B[0] + 2 * B[1]) / 3; A[3] = 255;
+			}
+			else
+			{
+				R[2] = (R[0] + R[1]) / 2; G[2] = (G[0] + G[1]) / 2; B[2] = (B[0] + B[1]) / 2; A[2] = 255;
+				R[3] = 0; G[3] = 0; B[3] = 0; A[3] = 0; // transparent black
+			}
+
+			for (int32 PY = 0; PY < 4; PY++)
+			{
+				for (int32 PX = 0; PX < 4; PX++)
+				{
+					int32 X = BX * 4 + PX;
+					int32 Y = BY * 4 + PY;
+					if (X >= Width || Y >= Height) continue;
+
+					int32 Idx = (LookupTable >> ((PY * 4 + PX) * 2)) & 0x03;
+					int32 Pixel = (Y * Width + X) * 4;
+					OutBGRA[Pixel + 0] = B[Idx];
+					OutBGRA[Pixel + 1] = G[Idx];
+					OutBGRA[Pixel + 2] = R[Idx];
+					OutBGRA[Pixel + 3] = A[Idx];
+				}
+			}
+		}
+	}
+	return true;
+}
+
+bool FVTFReader::DecompressDXT3(const uint8* Src, int32 Width, int32 Height, TArray<uint8>& OutBGRA)
+{
+	int32 BlocksX = FMath::Max(Width / 4, 1);
+	int32 BlocksY = FMath::Max(Height / 4, 1);
+	OutBGRA.SetNumZeroed(Width * Height * 4);
+
+	for (int32 BY = 0; BY < BlocksY; BY++)
+	{
+		for (int32 BX = 0; BX < BlocksX; BX++)
+		{
+			const uint8* Block = Src + (BY * BlocksX + BX) * 16;
+			const uint8* AlphaBlock = Block;       // 8 bytes of explicit alpha (4-bit per pixel)
+			const uint8* ColorBlock = Block + 8;    // 8 bytes DXT1 color block
+
+			uint16 C0 = ColorBlock[0] | (ColorBlock[1] << 8);
+			uint16 C1 = ColorBlock[2] | (ColorBlock[3] << 8);
+			uint32 LookupTable = ColorBlock[4] | (ColorBlock[5] << 8) | (ColorBlock[6] << 16) | (ColorBlock[7] << 24);
+
+			uint8 R[4], G[4], B[4];
+			DecodeDXTColor(C0, R[0], G[0], B[0]);
+			DecodeDXTColor(C1, R[1], G[1], B[1]);
+			R[2] = (2 * R[0] + R[1]) / 3; G[2] = (2 * G[0] + G[1]) / 3; B[2] = (2 * B[0] + B[1]) / 3;
+			R[3] = (R[0] + 2 * R[1]) / 3; G[3] = (G[0] + 2 * G[1]) / 3; B[3] = (B[0] + 2 * B[1]) / 3;
+
+			for (int32 PY = 0; PY < 4; PY++)
+			{
+				for (int32 PX = 0; PX < 4; PX++)
+				{
+					int32 X = BX * 4 + PX;
+					int32 Y = BY * 4 + PY;
+					if (X >= Width || Y >= Height) continue;
+
+					int32 Idx = (LookupTable >> ((PY * 4 + PX) * 2)) & 0x03;
+					// DXT3: 4-bit explicit alpha per pixel, 2 pixels per byte
+					int32 AlphaIdx = PY * 4 + PX;
+					uint8 Alpha4 = (AlphaBlock[AlphaIdx / 2] >> ((AlphaIdx % 2) * 4)) & 0x0F;
+					uint8 Alpha = Alpha4 | (Alpha4 << 4); // expand 4-bit to 8-bit
+
+					int32 Pixel = (Y * Width + X) * 4;
+					OutBGRA[Pixel + 0] = B[Idx];
+					OutBGRA[Pixel + 1] = G[Idx];
+					OutBGRA[Pixel + 2] = R[Idx];
+					OutBGRA[Pixel + 3] = Alpha;
+				}
+			}
+		}
+	}
+	return true;
+}
+
+bool FVTFReader::DecompressDXT5(const uint8* Src, int32 Width, int32 Height, TArray<uint8>& OutBGRA)
+{
+	int32 BlocksX = FMath::Max(Width / 4, 1);
+	int32 BlocksY = FMath::Max(Height / 4, 1);
+	OutBGRA.SetNumZeroed(Width * Height * 4);
+
+	for (int32 BY = 0; BY < BlocksY; BY++)
+	{
+		for (int32 BX = 0; BX < BlocksX; BX++)
+		{
+			const uint8* Block = Src + (BY * BlocksX + BX) * 16;
+
+			// Alpha block: 2 reference alphas + 6 bytes of 3-bit indices (16 pixels)
+			uint8 A0 = Block[0];
+			uint8 A1 = Block[1];
+			uint8 AlphaPalette[8];
+			AlphaPalette[0] = A0;
+			AlphaPalette[1] = A1;
+			if (A0 > A1)
+			{
+				AlphaPalette[2] = (6 * A0 + 1 * A1) / 7;
+				AlphaPalette[3] = (5 * A0 + 2 * A1) / 7;
+				AlphaPalette[4] = (4 * A0 + 3 * A1) / 7;
+				AlphaPalette[5] = (3 * A0 + 4 * A1) / 7;
+				AlphaPalette[6] = (2 * A0 + 5 * A1) / 7;
+				AlphaPalette[7] = (1 * A0 + 6 * A1) / 7;
+			}
+			else
+			{
+				AlphaPalette[2] = (4 * A0 + 1 * A1) / 5;
+				AlphaPalette[3] = (3 * A0 + 2 * A1) / 5;
+				AlphaPalette[4] = (2 * A0 + 3 * A1) / 5;
+				AlphaPalette[5] = (1 * A0 + 4 * A1) / 5;
+				AlphaPalette[6] = 0;
+				AlphaPalette[7] = 255;
+			}
+
+			// Read 48 bits (6 bytes) of 3-bit alpha indices
+			uint64 AlphaBits = 0;
+			for (int32 i = 0; i < 6; i++)
+			{
+				AlphaBits |= (uint64)Block[2 + i] << (i * 8);
+			}
+
+			// Color block (same as DXT1, starts at byte 8)
+			const uint8* ColorBlock = Block + 8;
+			uint16 C0 = ColorBlock[0] | (ColorBlock[1] << 8);
+			uint16 C1 = ColorBlock[2] | (ColorBlock[3] << 8);
+			uint32 LookupTable = ColorBlock[4] | (ColorBlock[5] << 8) | (ColorBlock[6] << 16) | (ColorBlock[7] << 24);
+
+			uint8 R[4], G[4], B[4];
+			DecodeDXTColor(C0, R[0], G[0], B[0]);
+			DecodeDXTColor(C1, R[1], G[1], B[1]);
+			R[2] = (2 * R[0] + R[1]) / 3; G[2] = (2 * G[0] + G[1]) / 3; B[2] = (2 * B[0] + B[1]) / 3;
+			R[3] = (R[0] + 2 * R[1]) / 3; G[3] = (G[0] + 2 * G[1]) / 3; B[3] = (B[0] + 2 * B[1]) / 3;
+
+			for (int32 PY = 0; PY < 4; PY++)
+			{
+				for (int32 PX = 0; PX < 4; PX++)
+				{
+					int32 X = BX * 4 + PX;
+					int32 Y = BY * 4 + PY;
+					if (X >= Width || Y >= Height) continue;
+
+					int32 ColorIdx = (LookupTable >> ((PY * 4 + PX) * 2)) & 0x03;
+					int32 AlphaIdx = (AlphaBits >> ((PY * 4 + PX) * 3)) & 0x07;
+
+					int32 Pixel = (Y * Width + X) * 4;
+					OutBGRA[Pixel + 0] = B[ColorIdx];
+					OutBGRA[Pixel + 1] = G[ColorIdx];
+					OutBGRA[Pixel + 2] = R[ColorIdx];
+					OutBGRA[Pixel + 3] = AlphaPalette[AlphaIdx];
+				}
+			}
+		}
+	}
+	return true;
+}
+
+void FVTFReader::SaveBGRAAsPNG(const TArray<uint8>& BGRAData, int32 Width, int32 Height, const FString& FilePath)
+{
+	// Convert BGRA → RGBA for the image wrapper
+	TArray<uint8> RGBA;
+	RGBA.SetNumUninitialized(BGRAData.Num());
+	for (int32 i = 0; i < Width * Height; i++)
+	{
+		RGBA[i * 4 + 0] = BGRAData[i * 4 + 2]; // R
+		RGBA[i * 4 + 1] = BGRAData[i * 4 + 1]; // G
+		RGBA[i * 4 + 2] = BGRAData[i * 4 + 0]; // B
+		RGBA[i * 4 + 3] = BGRAData[i * 4 + 3]; // A
+	}
+
+	IImageWrapperModule& ImageWrapperModule = FModuleManager::LoadModuleChecked<IImageWrapperModule>(FName("ImageWrapper"));
+	TSharedPtr<IImageWrapper> PNGWriter = ImageWrapperModule.CreateImageWrapper(EImageFormat::PNG);
+
+	if (PNGWriter.IsValid() && PNGWriter->SetRaw(RGBA.GetData(), RGBA.Num(), Width, Height, ERGBFormat::RGBA, 8))
+	{
+		const TArray64<uint8>& PNGData = PNGWriter->GetCompressed();
+
+		// Ensure directory exists
+		FString Dir = FPaths::GetPath(FilePath);
+		IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+		PlatformFile.CreateDirectoryTree(*Dir);
+
+		FFileHelper::SaveArrayToFile(PNGData, *FilePath);
+	}
 }
