@@ -46,6 +46,10 @@ private:
 	void OnActorAdded(AActor* Actor);
 	void OnActorDeleted(AActor* Actor);
 
+	/** Deferred rebuild - coalesces multiple actor add/delete events into one rebuild. */
+	void ScheduleDeferredRebuild();
+	EActiveTimerReturnType OnDeferredRebuild(double InCurrentTime, float InDeltaTime);
+
 	/** Delegate handles for cleanup. */
 	FDelegateHandle EditorSelectionChangedHandle;
 	FDelegateHandle ActorAddedHandle;
@@ -53,6 +57,9 @@ private:
 
 	/** Prevents recursive selection sync loops. */
 	bool bSyncingSelection = false;
+
+	/** True while a deferred rebuild is pending (prevents double-scheduling). */
+	bool bRebuildPending = false;
 };
 
 /**

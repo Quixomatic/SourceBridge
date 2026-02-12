@@ -201,6 +201,7 @@ void SSourceIOGraphEditor::OnEditorSelectionChanged(UObject* Object)
 
 	GraphEditorWidget->ClearSelectionSet();
 
+	USourceIOGraphNode* LastSelectedNode = nullptr;
 	USelection* Selection = GEditor->GetSelectedActors();
 	if (Selection)
 	{
@@ -213,9 +214,16 @@ void SSourceIOGraphEditor::OnEditorSelectionChanged(UObject* Object)
 				if (Node)
 				{
 					GraphEditorWidget->SetNodeSelection(Node, true);
+					LastSelectedNode = Node;
 				}
 			}
 		}
+	}
+
+	// If a single entity was selected, pan the graph to center on it
+	if (LastSelectedNode && Selection && Selection->Num() == 1)
+	{
+		GraphEditorWidget->JumpToNode(LastSelectedNode, false, false);
 	}
 
 	bSyncingSelection = false;
@@ -226,31 +234,11 @@ void SSourceIOGraphEditor::OnActorAdded(AActor* Actor)
 	ASourceEntityActor* SourceActor = Cast<ASourceEntityActor>(Actor);
 	if (!SourceActor || !Graph) return;
 
-	// Check if we already have a node for this actor
-	if (Graph->FindNodeForActor(SourceActor)) return;
-
-	// Add a new node
-	FGraphNodeCreator<USourceIOGraphNode> NodeCreator(*Graph);
-	USourceIOGraphNode* Node = NodeCreator.CreateNode(false);
-	Node->InitFromActor(SourceActor);
-	NodeCreator.Finalize();
-
-	// Place it at a reasonable position
-	float MaxX = 0;
-	for (UEdGraphNode* Existing : Graph->Nodes)
-	{
-		if (Existing)
-		{
-			MaxX = FMath::Max(MaxX, (float)Existing->NodePosX);
-		}
-	}
-	Node->NodePosX = MaxX + 400;
-	Node->NodePosY = 0;
-
-	if (GraphEditorWidget.IsValid())
-	{
-		GraphEditorWidget->NotifyGraphChanged();
-	}
+	// Defer the rebuild to next frame. During import, SpawnActor fires this callback
+	// BEFORE ApplyEntityProperties sets the real classname/targetname/I/O connections.
+	// By deferring, we let the import finish setting all properties first.
+	// Multiple actor additions (bulk import) coalesce into a single rebuild.
+	ScheduleDeferredRebuild();
 }
 
 void SSourceIOGraphEditor::OnActorDeleted(AActor* Actor)
@@ -258,18 +246,32 @@ void SSourceIOGraphEditor::OnActorDeleted(AActor* Actor)
 	ASourceEntityActor* SourceActor = Cast<ASourceEntityActor>(Actor);
 	if (!SourceActor || !Graph) return;
 
-	USourceIOGraphNode* Node = Graph->FindNodeForActor(SourceActor);
-	if (!Node) return;
+	// Defer rebuild to coalesce multiple deletions
+	ScheduleDeferredRebuild();
+}
 
-	// Remove the node from the graph (don't destroy the actor - it's already being deleted)
-	Graph->bIsRebuilding = true;
-	Graph->RemoveNode(Node);
-	Graph->bIsRebuilding = false;
+void SSourceIOGraphEditor::ScheduleDeferredRebuild()
+{
+	if (bRebuildPending) return;
+	bRebuildPending = true;
 
+	// RegisterActiveTimer fires on the next Slate tick, after the current
+	// operation (import, delete, etc.) has fully completed.
+	RegisterActiveTimer(0.0f, FWidgetActiveTimerDelegate::CreateSP(
+		this, &SSourceIOGraphEditor::OnDeferredRebuild));
+}
+
+EActiveTimerReturnType SSourceIOGraphEditor::OnDeferredRebuild(double /*InCurrentTime*/, float /*InDeltaTime*/)
+{
+	bRebuildPending = false;
+
+	BuildGraph();
 	if (GraphEditorWidget.IsValid())
 	{
 		GraphEditorWidget->NotifyGraphChanged();
 	}
+
+	return EActiveTimerReturnType::Stop;
 }
 
 // ============================================================================
