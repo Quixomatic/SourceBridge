@@ -249,6 +249,8 @@ void FSourceEntityDetailCustomization::BuildFGDPropertyWidgets(
 			// --- Choices: SComboBox dropdown ---
 
 			// Build shared list of choice display strings for the combo source
+			// IMPORTANT: ChoiceItems must be captured by lambdas to prevent dangling pointer -
+			// SComboBox::OptionsSource stores a raw pointer, so the array must outlive the widget
 			TSharedPtr<TArray<TSharedPtr<FString>>> ChoiceItems = MakeShared<TArray<TSharedPtr<FString>>>();
 			for (const FFGDChoice& Choice : Prop.Choices)
 			{
@@ -290,13 +292,13 @@ void FSourceEntityDetailCustomization::BuildFGDPropertyWidgets(
 					SNew(SComboBox<TSharedPtr<FString>>)
 					.OptionsSource(ChoiceItems.Get())
 					.InitiallySelectedItem(InitialSelection)
-					.OnGenerateWidget_Lambda([](TSharedPtr<FString> Item) -> TSharedRef<SWidget>
+					.OnGenerateWidget_Lambda([ChoiceItems](TSharedPtr<FString> Item) -> TSharedRef<SWidget>
 					{
 						return SNew(STextBlock)
-							.Text(FText::FromString(*Item))
+							.Text(Item.IsValid() ? FText::FromString(*Item) : FText::GetEmpty())
 							.Font(IDetailLayoutBuilder::GetDetailFont());
 					})
-					.OnSelectionChanged_Lambda([WeakActor, KeyName, Choices](
+					.OnSelectionChanged_Lambda([WeakActor, KeyName, Choices, ChoiceItems](
 						TSharedPtr<FString> Selected, ESelectInfo::Type)
 					{
 						if (!Selected.IsValid()) return;
@@ -316,7 +318,7 @@ void FSourceEntityDetailCustomization::BuildFGDPropertyWidgets(
 					[
 						SNew(STextBlock)
 						.Font(IDetailLayoutBuilder::GetDetailFont())
-						.Text_Lambda([WeakActor, KeyName, Choices]() -> FText
+						.Text_Lambda([WeakActor, KeyName, Choices, ChoiceItems]() -> FText
 						{
 							if (ASourceEntityActor* A = WeakActor.Get())
 							{

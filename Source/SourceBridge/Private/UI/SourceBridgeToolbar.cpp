@@ -102,6 +102,16 @@ void FSourceBridgeToolbar::Register()
 				);
 
 				MenuBuilder.AddMenuEntry(
+					LOCTEXT("IOGraph", "I/O Graph"),
+					LOCTEXT("IOGraphTooltip", "Visual node graph for Source entity I/O connections"),
+					FSlateIcon(),
+					FUIAction(FExecuteAction::CreateLambda([]()
+					{
+						FGlobalTabmanager::Get()->TryInvokeTab(FName(TEXT("SourceIOGraph")));
+					}))
+				);
+
+				MenuBuilder.AddMenuEntry(
 					LOCTEXT("Settings", "Export Settings..."),
 					LOCTEXT("SettingsTooltip", "Configure export settings (target game, output path, compile options)"),
 					FSlateIcon(),
