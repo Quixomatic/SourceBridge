@@ -346,8 +346,8 @@ UMaterialInterface* FMaterialImporter::ResolveSourceMaterial(const FString& Sour
 
 	UMaterialInterface* Material = nullptr;
 
-	UE_LOG(LogTemp, Verbose, TEXT("MaterialImporter: Resolving '%s' (searchPath=%s, additionalPaths=%d, VPKs=%d)"),
-		*SourceMaterialPath, *AssetSearchPath, AdditionalSearchPaths.Num(), VPKArchives.Num());
+	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Resolving '%s'..."), *SourceMaterialPath);
+	GLog->Flush();
 
 	// 1. Try to create from extracted VMT file or VPK archives
 	if (!AssetSearchPath.IsEmpty() || AdditionalSearchPaths.Num() > 0 || VPKArchives.Num() > 0)
@@ -355,7 +355,7 @@ UMaterialInterface* FMaterialImporter::ResolveSourceMaterial(const FString& Sour
 		Material = CreateMaterialFromVMT(SourceMaterialPath);
 		if (Material)
 		{
-			UE_LOG(LogTemp, Verbose, TEXT("MaterialImporter: '%s' resolved via VMT/VPK"), *SourceMaterialPath);
+			UE_LOG(LogTemp, Log, TEXT("MaterialImporter: '%s' -> resolved via VMT/VTF"), *SourceMaterialPath);
 		}
 	}
 
@@ -365,7 +365,7 @@ UMaterialInterface* FMaterialImporter::ResolveSourceMaterial(const FString& Sour
 		Material = FindExistingMaterial(SourceMaterialPath);
 		if (Material)
 		{
-			UE_LOG(LogTemp, Verbose, TEXT("MaterialImporter: '%s' resolved via asset registry"), *SourceMaterialPath);
+			UE_LOG(LogTemp, Log, TEXT("MaterialImporter: '%s' -> resolved via asset registry"), *SourceMaterialPath);
 		}
 	}
 
@@ -479,6 +479,10 @@ UMaterialInterface* FMaterialImporter::CreateMaterialFromVMT(const FString& Sour
 	// 3. Case-insensitive disk search (slow recursive scan, last resort)
 	if (VMTFullPath.IsEmpty() && VMTData.ShaderName.IsEmpty())
 	{
+		UE_LOG(LogTemp, Warning, TEXT("MaterialImporter: SLOW PATH - recursive VMT scan for '%s' (%d search roots)"),
+			*SourceMaterialPath, SearchRoots.Num());
+		GLog->Flush();
+
 		FString SearchPath = SourceMaterialPath + TEXT(".vmt");
 		SearchPath = SearchPath.Replace(TEXT("\\"), TEXT("/"));
 
@@ -688,6 +692,10 @@ UTexture2D* FMaterialImporter::FindAndLoadVTF(const FString& TexturePath)
 	}
 
 	// 3. Case-insensitive disk search (slow recursive scan, last resort)
+	UE_LOG(LogTemp, Warning, TEXT("MaterialImporter: SLOW PATH - recursive VTF scan for '%s' (%d search roots)"),
+		*TexturePath, SearchRoots.Num());
+	GLog->Flush();
+
 	FString SearchPath = TexturePath + TEXT(".vtf");
 	SearchPath = SearchPath.Replace(TEXT("\\"), TEXT("/"));
 

@@ -102,6 +102,7 @@ FVMFImportResult FVMFImporter::ImportBlocks(const TArray<FVMFKeyValues>& Blocks,
 						SlowTask.EnterProgressFrame(1.0f, FText::FromString(
 							FString::Printf(TEXT("Brush %d/%d"), Result.BrushesImported + 1, TotalItems)));
 						ImportSolid(Child, World, Settings, Result);
+						if (Result.BrushesImported % 100 == 0) { GLog->Flush(); }
 					}
 				}
 			}
@@ -112,6 +113,7 @@ FVMFImportResult FVMFImporter::ImportBlocks(const TArray<FVMFKeyValues>& Blocks,
 
 			SlowTask.EnterProgressFrame(1.0f, FText::FromString(
 				FString::Printf(TEXT("Entity %d/%d"), Result.EntitiesImported + 1, TotalItems)));
+			GLog->Flush();
 
 			// Check if brush entity (has solid children) or point entity
 			bool bHasSolids = false;

@@ -322,6 +322,10 @@ TArray<UMaterialInterface*> FModelImporter::ResolveMaterials(const FSourceModelD
 {
 	TArray<UMaterialInterface*> Materials;
 
+	UE_LOG(LogTemp, Log, TEXT("ModelImporter: Resolving %d materials (%d search dirs)"),
+		ModelData.MaterialNames.Num(), ModelData.MaterialSearchDirs.Num());
+	GLog->Flush();
+
 	// Build material path for each material name using texture directories
 	for (int32 i = 0; i < ModelData.MaterialNames.Num(); i++)
 	{
@@ -674,6 +678,9 @@ UStaticMesh* FModelImporter::ResolveModel(const FString& SourceModelPath, int32 
 	{
 		return *Cached;
 	}
+
+	UE_LOG(LogTemp, Log, TEXT("ModelImporter: Resolving model '%s' (skin %d)..."), *SourceModelPath, SkinIndex);
+	GLog->Flush();
 
 	// Check if we already parsed this model (different skin)
 	TSharedPtr<FSourceModelData> ParsedData;
