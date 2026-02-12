@@ -315,29 +315,14 @@ void ASourceBrushEntity::BeginPlay()
 	{
 		if (!Mesh) continue;
 
-		// --- Visibility: driven by actual materials (like vbsp strips tool textures) ---
+		// --- Visibility: hide individual sections with tool textures (like vbsp strips faces) ---
 		int32 NumSections = Mesh->GetNumSections();
-		if (NumSections > 0)
+		for (int32 i = 0; i < NumSections; i++)
 		{
-			bool bAllToolTextures = true;
-			for (int32 i = 0; i < NumSections; i++)
+			UMaterialInterface* Mat = Mesh->GetMaterial(i);
+			if (Mat && Mat->GetName().Contains(TEXT("TOOLS"), ESearchCase::IgnoreCase))
 			{
-				UMaterialInterface* Mat = Mesh->GetMaterial(i);
-				if (Mat)
-				{
-					FString MatName = Mat->GetName();
-					// Tool textures from import are named like M_TOOLS_TOOLSTRIGGER, M_TOOLS_TOOLSNODRAW, etc.
-					if (!MatName.Contains(TEXT("TOOLS"), ESearchCase::IgnoreCase))
-					{
-						bAllToolTextures = false;
-						break;
-					}
-				}
-			}
-
-			if (bAllToolTextures)
-			{
-				Mesh->SetVisibility(false);
+				Mesh->SetMeshSectionVisible(i, false);
 			}
 		}
 
