@@ -9,6 +9,8 @@
 #include "Materials/MaterialExpressionTextureSample.h"
 #include "Materials/MaterialExpressionTextureSampleParameter2D.h"
 #include "Materials/MaterialExpressionVectorParameter.h"
+#include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionMultiply.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Misc/FileHelper.h"
 #include "UObject/ConstructorHelpers.h"
@@ -79,12 +81,37 @@ FVMTParsedMaterial FMaterialImporter::ParseVMT(const FString& VMTContent)
 	{
 		FString Token;
 		while (*Ptr && *Ptr != ' ' && *Ptr != '\t' && *Ptr != '\r' &&
-			*Ptr != '\n' && *Ptr != '{' && *Ptr != '}')
+			*Ptr != '\n' && *Ptr != '{' && *Ptr != '}' && *Ptr != '"')
 		{
 			Token += *Ptr;
 			Ptr++;
 		}
 		return Token;
+	};
+
+	// Skip whitespace but NOT newlines (for reading values on the same line as their key)
+	auto SkipInlineWS = [&]()
+	{
+		while (*Ptr == ' ' || *Ptr == '\t')
+		{
+			Ptr++;
+		}
+	};
+
+	// Read rest of line as a value (for unquoted values that may contain spaces/backslashes)
+	auto ReadRestOfLine = [&]() -> FString
+	{
+		FString Value;
+		while (*Ptr && *Ptr != '\r' && *Ptr != '\n' && *Ptr != '{' && *Ptr != '}')
+		{
+			if (*Ptr == '/' && *(Ptr + 1) == '/')
+			{
+				break; // Stop at line comment
+			}
+			Value += *Ptr;
+			Ptr++;
+		}
+		return Value.TrimStartAndEnd();
 	};
 
 	// Read shader name
@@ -120,31 +147,41 @@ FVMTParsedMaterial FMaterialImporter::ParseVMT(const FString& VMTContent)
 				Depth--;
 				Ptr++;
 			}
-			else if (*Ptr == '"' && Depth == 1)
+			else if (Depth == 1 && (*Ptr == '"' || *Ptr == '$' || *Ptr == '%' || FChar::IsAlpha(*Ptr)))
 			{
-				// Key-value pair at top level (quoted key)
-				FString Key = ReadQuoted();
-				SkipWS();
+				// Key-value pair at top level
+				// Handles: "$key" "value", "$key" value, $key "value", $key value
+				FString Key;
+				if (*Ptr == '"')
+				{
+					Key = ReadQuoted();
+				}
+				else
+				{
+					Key = ReadToken();
+				}
+
+				SkipInlineWS();
+
 				FString Value;
 				if (*Ptr == '"')
 				{
-					// Quoted value: "$key" "value"
 					Value = ReadQuoted();
 				}
-				else if (*Ptr && *Ptr != '{' && *Ptr != '}')
+				else if (*Ptr && *Ptr != '\r' && *Ptr != '\n' && *Ptr != '{' && *Ptr != '}')
 				{
-					// Unquoted value: "$key" value (common in tool VMTs)
-					Value = ReadToken();
+					// Unquoted value - read to end of line
+					Value = ReadRestOfLine();
 				}
+
 				if (!Key.IsEmpty())
 				{
-					// Normalize key to lowercase
 					Result.Parameters.Add(Key.ToLower(), Value);
 				}
 			}
 			else if (*Ptr)
 			{
-				// Unquoted token (skip)
+				// Unknown token at non-top depth, skip
 				ReadToken();
 			}
 		}
@@ -754,14 +791,28 @@ UMaterial* FMaterialImporter::GetOrCreateTranslucentBaseMaterial()
 	TexParam->SamplerType = SAMPLERTYPE_Color;
 	TranslucentBaseMaterial->GetExpressionCollection().AddExpression(TexParam);
 
-	// Connect RGB to BaseColor, Alpha to Opacity (not OpacityMask — smooth blending)
+	// OpacityScale parameter (default 1.0, can be reduced for tool textures)
+	UMaterialExpressionScalarParameter* OpacityScaleParam =
+		NewObject<UMaterialExpressionScalarParameter>(TranslucentBaseMaterial);
+	OpacityScaleParam->ParameterName = FName(TEXT("OpacityScale"));
+	OpacityScaleParam->DefaultValue = 1.0f;
+	TranslucentBaseMaterial->GetExpressionCollection().AddExpression(OpacityScaleParam);
+
+	// Multiply texture alpha by OpacityScale → Opacity
+	UMaterialExpressionMultiply* MultiplyNode =
+		NewObject<UMaterialExpressionMultiply>(TranslucentBaseMaterial);
+	MultiplyNode->A.Connect(4, TexParam);        // Texture Alpha
+	MultiplyNode->B.Connect(0, OpacityScaleParam); // OpacityScale scalar
+	TranslucentBaseMaterial->GetExpressionCollection().AddExpression(MultiplyNode);
+
+	// Connect RGB to BaseColor, multiplied alpha to Opacity
 	TranslucentBaseMaterial->GetEditorOnlyData()->BaseColor.Connect(0, TexParam);
-	TranslucentBaseMaterial->GetEditorOnlyData()->Opacity.Connect(4, TexParam); // Output 4 = Alpha
+	TranslucentBaseMaterial->GetEditorOnlyData()->Opacity.Connect(0, MultiplyNode);
 
 	TranslucentBaseMaterial->PreEditChange(nullptr);
 	TranslucentBaseMaterial->PostEditChange();
 
-	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Created shared translucent base material"));
+	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Created shared translucent base material (with OpacityScale)"));
 	return TranslucentBaseMaterial;
 }
 
@@ -817,6 +868,14 @@ UMaterialInstanceDynamic* FMaterialImporter::CreateTexturedMID(UTexture2D* Textu
 	if (MID)
 	{
 		MID->SetTextureParameterValue(FName(TEXT("BaseTexture")), Texture);
+
+		// Tool textures should be much more transparent so you can see through them
+		// (Hammer renders them as translucent overlays, not solid surfaces)
+		if (AlphaMode == ESourceAlphaMode::Translucent
+			&& SourceMaterialPath.ToUpper().StartsWith(TEXT("TOOLS/")))
+		{
+			MID->SetScalarParameterValue(FName(TEXT("OpacityScale")), 0.25f);
+		}
 	}
 
 	return MID;
