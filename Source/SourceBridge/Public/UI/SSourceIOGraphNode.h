@@ -9,8 +9,8 @@ class ASourceEntityActor;
 
 /**
  * Custom Slate widget for Source I/O graph nodes.
- * Full custom layout: color-coded title bar, pins, collapsible FGD properties,
- * and I/O connections section with inline editing.
+ * Delegates to base SGraphNode for core rendering (title, pins, wires),
+ * then adds collapsible FGD property editing and I/O connection sections below pins.
  */
 class SSourceIOGraphNode : public SGraphNode
 {
@@ -23,15 +23,12 @@ public:
 	// SGraphNode overrides
 	virtual void UpdateGraphNode() override;
 	virtual void CreatePinWidgets() override;
-	virtual void AddPin(const TSharedRef<SGraphPin>& PinToAdd) override;
-
-	// SWidget override for tick-based refresh
-	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
+	virtual void CreateBelowPinControls(TSharedPtr<SVerticalBox> MainBox) override;
 
 private:
 	USourceIOGraphNode* IONode = nullptr;
 
-	/** Pin containers - uses base class LeftNodeBox/RightNodeBox for pin geometry */
+	/** Custom content sections added below pins. */
 	TSharedPtr<SVerticalBox> PropertiesBox;
 	TSharedPtr<SVerticalBox> ConnectionsBox;
 

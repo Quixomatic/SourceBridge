@@ -4,13 +4,11 @@
 #include "Actors/SourceEntityActor.h"
 #include "Entities/EntityIOConnection.h"
 #include "SGraphPin.h"
-#include "NodeFactory.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SComboBox.h"
 #include "Widgets/Layout/SExpandableArea.h"
-#include "Widgets/Layout/SSeparator.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/SBoxPanel.h"
 
@@ -43,245 +41,98 @@ void SSourceIOGraphNode::Construct(const FArguments& InArgs, USourceIOGraphNode*
 }
 
 // ============================================================================
-// UpdateGraphNode - Full custom layout
+// UpdateGraphNode - delegate to base class for proper rendering
 // ============================================================================
 
 void SSourceIOGraphNode::UpdateGraphNode()
 {
-	// Reset
-	InputPins.Empty();
-	OutputPins.Empty();
-	RightNodeBox.Reset();
-	LeftNodeBox.Reset();
-
-	if (!IONode) return;
-
-	// Colors
-	FLinearColor TitleColor = USourceIOGraphNode::GetColorForClassname(IONode->CachedClassname);
-	FLinearColor BodyColor(0.06f, 0.06f, 0.06f, 0.9f);
-	FLinearColor BorderColor = TitleColor * 0.6f;
-	BorderColor.A = 1.0f;
-
-	// Build title strings
-	FString TitleStr = IONode->CachedClassname;
-	FString SubtitleStr = IONode->CachedTargetName.IsEmpty() ? TEXT("") : FString::Printf(TEXT("\"%s\""), *IONode->CachedTargetName);
-
-	// Create containers using base class members (critical for wire drawing)
-	PropertiesBox = SNew(SVerticalBox);
-	ConnectionsBox = SNew(SVerticalBox);
-
-	// Main content
-	this->GetOrAddSlot(ENodeZone::Center)
-	.HAlign(HAlign_Fill)
-	.VAlign(VAlign_Center)
-	[
-		SNew(SBorder)
-		.BorderImage(FAppStyle::GetBrush("Graph.StateNode.Body"))
-		.Padding(0)
-		.BorderBackgroundColor(BorderColor)
-		[
-			SNew(SVerticalBox)
-
-			// === Title Bar ===
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			[
-				SNew(SBorder)
-				.BorderImage(FAppStyle::GetBrush("Graph.StateNode.ColorSpill"))
-				.BorderBackgroundColor(TitleColor)
-				.Padding(FMargin(8, 4))
-				[
-					SNew(SVerticalBox)
-
-					+ SVerticalBox::Slot()
-					.AutoHeight()
-					[
-						SNew(STextBlock)
-						.Text(FText::FromString(TitleStr))
-						.Font(FCoreStyle::GetDefaultFontStyle("Bold", 10))
-						.ColorAndOpacity(FLinearColor::White)
-					]
-
-					+ SVerticalBox::Slot()
-					.AutoHeight()
-					[
-						SNew(STextBlock)
-						.Text(FText::FromString(SubtitleStr))
-						.Font(FCoreStyle::GetDefaultFontStyle("Italic", 8))
-						.ColorAndOpacity(FLinearColor(0.8f, 0.8f, 0.8f, 0.8f))
-						.Visibility(SubtitleStr.IsEmpty() ? EVisibility::Collapsed : EVisibility::Visible)
-					]
-				]
-			]
-
-			// === Pins Section ===
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			.Padding(0)
-			[
-				SNew(SBorder)
-				.BorderImage(FAppStyle::GetBrush("NoBorder"))
-				.BorderBackgroundColor(BodyColor)
-				.Padding(FMargin(4, 2))
-				[
-					SNew(SHorizontalBox)
-
-					// Left pin column (inputs) - uses base class LeftNodeBox
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					.VAlign(VAlign_Top)
-					[
-						SAssignNew(LeftNodeBox, SVerticalBox)
-					]
-
-					// Spacer
-					+ SHorizontalBox::Slot()
-					.FillWidth(1.0f)
-					.MinWidth(20.0f)
-					[
-						SNullWidget::NullWidget
-					]
-
-					// Right pin column (outputs) - uses base class RightNodeBox
-					+ SHorizontalBox::Slot()
-					.AutoWidth()
-					.VAlign(VAlign_Top)
-					.HAlign(HAlign_Right)
-					[
-						SAssignNew(RightNodeBox, SVerticalBox)
-					]
-				]
-			]
-
-			// === Properties Section (collapsible) ===
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			[
-				SNew(SBorder)
-				.BorderImage(FAppStyle::GetBrush("NoBorder"))
-				.BorderBackgroundColor(BodyColor)
-				.Padding(0)
-				.Visibility_Lambda([this]()
-				{
-					return (IONode && IONode->bHasFGDData && IONode->ResolvedFGDClass.Properties.Num() > 0)
-						? EVisibility::Visible : EVisibility::Collapsed;
-				})
-				[
-					SNew(SExpandableArea)
-					.AreaTitle(LOCTEXT("Properties", "Properties"))
-					.AreaTitleFont(GetNodeBodyBoldFont())
-					.InitiallyCollapsed(!IONode->bShowProperties)
-					.OnAreaExpansionChanged_Lambda([this](bool bExpanded)
-					{
-						if (IONode) IONode->bShowProperties = bExpanded;
-					})
-					.BodyContent()
-					[
-						PropertiesBox.ToSharedRef()
-					]
-					.Padding(FMargin(4, 0))
-				]
-			]
-
-			// === Connections Section (collapsible) ===
-			+ SVerticalBox::Slot()
-			.AutoHeight()
-			[
-				SNew(SBorder)
-				.BorderImage(FAppStyle::GetBrush("NoBorder"))
-				.BorderBackgroundColor(BodyColor)
-				.Padding(0)
-				.Visibility_Lambda([this]()
-				{
-					if (!IONode || !IONode->SourceActor.IsValid()) return EVisibility::Collapsed;
-					for (const FName& Tag : IONode->SourceActor->Tags)
-					{
-						if (Tag.ToString().StartsWith(TEXT("io:"), ESearchCase::IgnoreCase))
-							return EVisibility::Visible;
-					}
-					return EVisibility::Collapsed;
-				})
-				[
-					SNew(SExpandableArea)
-					.AreaTitle(LOCTEXT("Connections", "Connections"))
-					.AreaTitleFont(GetNodeBodyBoldFont())
-					.InitiallyCollapsed(!IONode->bShowConnections)
-					.OnAreaExpansionChanged_Lambda([this](bool bExpanded)
-					{
-						if (IONode) IONode->bShowConnections = bExpanded;
-					})
-					.BodyContent()
-					[
-						ConnectionsBox.ToSharedRef()
-					]
-					.Padding(FMargin(4, 0, 4, 4))
-				]
-			]
-		]
-	];
-
-	// Create the pin widgets
-	CreatePinWidgets();
-
-	// Build property widgets
-	BuildPropertyWidgets();
-
-	// Build connection widgets
-	BuildConnectionWidgets();
+	// Base class handles: title bar, pin layout, wire geometry,
+	// selection visuals, content scaling, error reporting, etc.
+	SGraphNode::UpdateGraphNode();
 }
 
 // ============================================================================
-// Pin creation
+// Pin creation - delegate to base class
 // ============================================================================
 
 void SSourceIOGraphNode::CreatePinWidgets()
 {
-	if (!IONode) return;
-
-	for (UEdGraphPin* Pin : IONode->Pins)
-	{
-		if (!Pin || Pin->bHidden) continue;
-
-		TSharedPtr<SGraphPin> PinWidget = FNodeFactory::CreatePinWidget(Pin);
-		if (PinWidget.IsValid())
-		{
-			PinWidget->SetOwner(SharedThis(this));
-			AddPin(PinWidget.ToSharedRef());
-		}
-	}
+	SGraphNode::CreatePinWidgets();
 }
 
-void SSourceIOGraphNode::AddPin(const TSharedRef<SGraphPin>& PinToAdd)
-{
-	PinToAdd->SetShowLabel(true);
+// ============================================================================
+// CreateBelowPinControls - inject FGD properties and I/O connections
+// ============================================================================
 
-	if (PinToAdd->GetDirection() == EGPD_Input)
+void SSourceIOGraphNode::CreateBelowPinControls(TSharedPtr<SVerticalBox> MainBox)
+{
+	if (!IONode || !MainBox.IsValid()) return;
+
+	PropertiesBox = SNew(SVerticalBox);
+	ConnectionsBox = SNew(SVerticalBox);
+
+	// === Properties section (collapsible) ===
+	if (IONode->bHasFGDData && IONode->ResolvedFGDClass.Properties.Num() > 0)
 	{
-		if (LeftNodeBox.IsValid())
-		{
-			LeftNodeBox->AddSlot()
-				.AutoHeight()
-				.Padding(2, 1)
+		MainBox->AddSlot()
+			.AutoHeight()
+			.Padding(4, 2)
+			[
+				SNew(SExpandableArea)
+				.AreaTitle(LOCTEXT("Properties", "Properties"))
+				.AreaTitleFont(GetNodeBodyBoldFont())
+				.InitiallyCollapsed(!IONode->bShowProperties)
+				.OnAreaExpansionChanged_Lambda([this](bool bExpanded)
+				{
+					if (IONode) IONode->bShowProperties = bExpanded;
+				})
+				.BodyContent()
 				[
-					PinToAdd
-				];
-		}
-		InputPins.Add(PinToAdd);
+					PropertiesBox.ToSharedRef()
+				]
+				.Padding(FMargin(4, 0))
+			];
 	}
-	else
+
+	// === Connections section (collapsible) ===
+	bool bHasIOTags = false;
+	if (IONode->SourceActor.IsValid())
 	{
-		if (RightNodeBox.IsValid())
+		for (const FName& ActorTag : IONode->SourceActor->Tags)
 		{
-			RightNodeBox->AddSlot()
-				.AutoHeight()
-				.HAlign(HAlign_Right)
-				.Padding(2, 1)
-				[
-					PinToAdd
-				];
+			if (ActorTag.ToString().StartsWith(TEXT("io:"), ESearchCase::IgnoreCase))
+			{
+				bHasIOTags = true;
+				break;
+			}
 		}
-		OutputPins.Add(PinToAdd);
 	}
+
+	if (bHasIOTags)
+	{
+		MainBox->AddSlot()
+			.AutoHeight()
+			.Padding(4, 0, 4, 4)
+			[
+				SNew(SExpandableArea)
+				.AreaTitle(LOCTEXT("Connections", "Connections"))
+				.AreaTitleFont(GetNodeBodyBoldFont())
+				.InitiallyCollapsed(!IONode->bShowConnections)
+				.OnAreaExpansionChanged_Lambda([this](bool bExpanded)
+				{
+					if (IONode) IONode->bShowConnections = bExpanded;
+				})
+				.BodyContent()
+				[
+					ConnectionsBox.ToSharedRef()
+				]
+				.Padding(FMargin(4, 0, 4, 4))
+			];
+	}
+
+	// Populate the sections
+	BuildPropertyWidgets();
+	BuildConnectionWidgets();
 }
 
 // ============================================================================
@@ -687,15 +538,6 @@ TSharedRef<SWidget> SSourceIOGraphNode::CreateConnectionRowWidget(
 				})
 			]
 		];
-}
-
-// ============================================================================
-// Tick
-// ============================================================================
-
-void SSourceIOGraphNode::Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime)
-{
-	SGraphNode::Tick(AllottedGeometry, InCurrentTime, InDeltaTime);
 }
 
 #undef LOCTEXT_NAMESPACE
