@@ -91,18 +91,31 @@ TArray<FString> FFGDDatabase::GetSolidClassNames() const
 
 FFGDEntityClass FFGDDatabase::GetResolved(const FString& ClassName) const
 {
+	TSet<FString> Visited;
+	return GetResolvedInternal(ClassName, Visited);
+}
+
+FFGDEntityClass FFGDDatabase::GetResolvedInternal(const FString& ClassName, TSet<FString>& Visited) const
+{
 	const FFGDEntityClass* Class = FindClass(ClassName);
 	if (!Class)
 	{
 		return FFGDEntityClass();
 	}
 
+	// Cycle detection: if we've already visited this class, stop recursion
+	if (Visited.Contains(ClassName))
+	{
+		return *Class;
+	}
+	Visited.Add(ClassName);
+
 	FFGDEntityClass Resolved = *Class;
 
 	// Merge base classes (depth-first, earliest base = lowest priority)
 	for (int32 i = Class->BaseClasses.Num() - 1; i >= 0; --i)
 	{
-		FFGDEntityClass BaseResolved = GetResolved(Class->BaseClasses[i]);
+		FFGDEntityClass BaseResolved = GetResolvedInternal(Class->BaseClasses[i], Visited);
 
 		// Add base properties that don't already exist in Resolved
 		for (const FFGDProperty& BaseProp : BaseResolved.Properties)

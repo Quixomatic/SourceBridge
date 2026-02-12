@@ -180,6 +180,10 @@ struct SOURCEBRIDGE_API FFGDDatabase
 	 */
 	FFGDEntityClass GetResolved(const FString& ClassName) const;
 
+private:
+	FFGDEntityClass GetResolvedInternal(const FString& ClassName, TSet<FString>& Visited) const;
+
+public:
 	/** Validate an entity's keyvalues against the FGD schema. Returns warnings. */
 	TArray<FString> ValidateEntity(
 		const FString& ClassName,

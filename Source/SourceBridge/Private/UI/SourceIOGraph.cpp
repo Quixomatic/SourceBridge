@@ -379,9 +379,13 @@ void USourceIOGraphSchema::GetGraphContextActions(FGraphContextMenuBuilder& Cont
 			const FFGDEntityClass* FGDClass = FGD.FindClass(Name);
 			if (!FGDClass) continue;
 
-			// Only show entities that have I/O (to keep menu manageable)
-			FFGDEntityClass Resolved = FGD.GetResolved(Name);
-			if (Resolved.Inputs.Num() == 0 && Resolved.Outputs.Num() == 0) continue;
+			// Only show entities that have I/O (check unresolved first for speed, then resolve if needed)
+			if (FGDClass->Inputs.Num() == 0 && FGDClass->Outputs.Num() == 0)
+			{
+				// Check resolved (inherits from base with I/O)
+				FFGDEntityClass Resolved = FGD.GetResolved(Name);
+				if (Resolved.Inputs.Num() == 0 && Resolved.Outputs.Num() == 0) continue;
+			}
 
 			FString Category;
 			if (Name.StartsWith(TEXT("trigger_"))) Category = TEXT("Triggers");
