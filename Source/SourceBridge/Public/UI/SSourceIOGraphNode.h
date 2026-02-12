@@ -2,12 +2,15 @@
 
 #include "CoreMinimal.h"
 #include "SGraphNode.h"
+#include "Entities/FGDParser.h"
 
 class USourceIOGraphNode;
+class ASourceEntityActor;
 
 /**
  * Custom Slate widget for Source I/O graph nodes.
- * Color-coded title bar based on entity type, shows targetname + classname.
+ * Full custom layout: color-coded title bar, pins, collapsible FGD properties,
+ * and I/O connections section with inline editing.
  */
 class SSourceIOGraphNode : public SGraphNode
 {
@@ -20,7 +23,36 @@ public:
 	// SGraphNode overrides
 	virtual void UpdateGraphNode() override;
 	virtual void CreatePinWidgets() override;
+	virtual void AddPin(const TSharedRef<SGraphPin>& PinToAdd) override;
+
+	// SWidget override for tick-based refresh
+	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 
 private:
 	USourceIOGraphNode* IONode = nullptr;
+
+	/** Pin containers for custom layout */
+	TSharedPtr<SVerticalBox> LeftPinBox;
+	TSharedPtr<SVerticalBox> RightPinBox;
+	TSharedPtr<SVerticalBox> PropertiesBox;
+	TSharedPtr<SVerticalBox> ConnectionsBox;
+
+	/** Build the FGD property widgets inside PropertiesBox. */
+	void BuildPropertyWidgets();
+
+	/** Build the I/O connection rows inside ConnectionsBox. */
+	void BuildConnectionWidgets();
+
+	/** Create a property widget for a single FGD property. */
+	TSharedRef<SWidget> CreatePropertyWidget(const FFGDProperty& Prop, TWeakObjectPtr<ASourceEntityActor> WeakActor);
+
+	/** Create a single spawnflag checkbox row. */
+	TSharedRef<SWidget> CreateFlagWidget(const FFGDFlag& Flag, TWeakObjectPtr<ASourceEntityActor> WeakActor);
+
+	/** Create a single connection row widget. */
+	TSharedRef<SWidget> CreateConnectionRowWidget(int32 TagIndex, const FString& TagStr, TWeakObjectPtr<ASourceEntityActor> WeakActor);
+
+	/** Compact font for node body. */
+	static FSlateFontInfo GetNodeBodyFont();
+	static FSlateFontInfo GetNodeBodyBoldFont();
 };

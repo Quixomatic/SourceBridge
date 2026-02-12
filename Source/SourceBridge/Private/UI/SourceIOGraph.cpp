@@ -1,5 +1,6 @@
 #include "UI/SourceIOGraph.h"
 #include "UI/SSourceIOGraphNode.h"
+#include "UI/SourceIOConnectionDrawingPolicy.h"
 #include "Actors/SourceEntityActor.h"
 #include "Entities/EntityIOConnection.h"
 #include "SourceBridgeModule.h"
@@ -49,7 +50,10 @@ void USourceIOGraphNode::AllocateDefaultPins()
 		// Create output pins from FGD outputs
 		for (const FFGDIODef& Output : ResolvedFGDClass.Outputs)
 		{
-			UEdGraphPin* Pin = CreatePin(EGPD_Output, TEXT("SourceIO"), FName(*Output.Name));
+			FEdGraphPinType PinType;
+			PinType.PinCategory = TEXT("SourceIO");
+			PinType.PinSubCategory = TEXT("Output");
+			UEdGraphPin* Pin = CreatePin(EGPD_Output, PinType, FName(*Output.Name));
 			if (Pin)
 			{
 				Pin->PinToolTip = Output.Description.IsEmpty()
@@ -61,7 +65,10 @@ void USourceIOGraphNode::AllocateDefaultPins()
 		// Create input pins from FGD inputs
 		for (const FFGDIODef& Input : ResolvedFGDClass.Inputs)
 		{
-			UEdGraphPin* Pin = CreatePin(EGPD_Input, TEXT("SourceIO"), FName(*Input.Name));
+			FEdGraphPinType PinType;
+			PinType.PinCategory = TEXT("SourceIO");
+			PinType.PinSubCategory = TEXT("Input");
+			UEdGraphPin* Pin = CreatePin(EGPD_Input, PinType, FName(*Input.Name));
 			if (Pin)
 			{
 				Pin->PinToolTip = Input.Description.IsEmpty()
@@ -73,8 +80,17 @@ void USourceIOGraphNode::AllocateDefaultPins()
 	else
 	{
 		// No FGD data - create generic pins
-		CreatePin(EGPD_Output, TEXT("SourceIO"), TEXT("Output"));
-		CreatePin(EGPD_Input, TEXT("SourceIO"), TEXT("Input"));
+		{
+			FEdGraphPinType OutPinType;
+			OutPinType.PinCategory = TEXT("SourceIO");
+			OutPinType.PinSubCategory = TEXT("Output");
+			CreatePin(EGPD_Output, OutPinType, TEXT("Output"));
+
+			FEdGraphPinType InPinType;
+			InPinType.PinCategory = TEXT("SourceIO");
+			InPinType.PinSubCategory = TEXT("Input");
+			CreatePin(EGPD_Input, InPinType, TEXT("Input"));
+		}
 	}
 
 	// Also discover output names from existing io: tags that aren't already pins
@@ -90,7 +106,10 @@ void USourceIOGraphNode::AllocateDefaultPins()
 			{
 				if (!FindOutputPin(Conn.OutputName))
 				{
-					UEdGraphPin* Pin = CreatePin(EGPD_Output, TEXT("SourceIO"), FName(*Conn.OutputName));
+					FEdGraphPinType TagPinType;
+					TagPinType.PinCategory = TEXT("SourceIO");
+					TagPinType.PinSubCategory = TEXT("Output");
+					UEdGraphPin* Pin = CreatePin(EGPD_Output, TagPinType, FName(*Conn.OutputName));
 					if (Pin)
 					{
 						Pin->PinToolTip = FString::Printf(TEXT("Output: %s (discovered from tag)"), *Conn.OutputName);
@@ -411,8 +430,19 @@ void USourceIOGraphSchema::GetGraphContextActions(FGraphContextMenuBuilder& Cont
 
 FLinearColor USourceIOGraphSchema::GetPinTypeColor(const FEdGraphPinType& PinType) const
 {
-	// All our pins are "SourceIO" category - color by direction is handled by the pin widget
-	return FLinearColor(0.5f, 0.8f, 0.5f); // Light green
+	if (PinType.PinSubCategory == TEXT("Input"))
+	{
+		return FLinearColor(0.3f, 0.5f, 0.9f); // Light blue for inputs
+	}
+	return FLinearColor(0.4f, 0.8f, 0.3f); // Light green for outputs
+}
+
+FConnectionDrawingPolicy* USourceIOGraphSchema::CreateConnectionDrawingPolicy(
+	int32 InBackLayerID, int32 InFrontLayerID, float InZoomFactor,
+	const FSlateRect& InClippingRect, FSlateWindowElementList& InDrawElements, UEdGraph* InGraphObj) const
+{
+	return new FSourceIOConnectionDrawingPolicy(
+		InBackLayerID, InFrontLayerID, InZoomFactor, InClippingRect, InDrawElements, InGraphObj);
 }
 
 // ============================================================================
@@ -517,7 +547,10 @@ void USourceIOGraph::RebuildConnections()
 			if (!OutputPin)
 			{
 				// Create the pin dynamically if it doesn't exist
-				OutputPin = IONode->CreatePin(EGPD_Output, TEXT("SourceIO"), FName(*Conn.OutputName));
+				FEdGraphPinType DynOutType;
+				DynOutType.PinCategory = TEXT("SourceIO");
+				DynOutType.PinSubCategory = TEXT("Output");
+				OutputPin = IONode->CreatePin(EGPD_Output, DynOutType, FName(*Conn.OutputName));
 				if (OutputPin)
 				{
 					OutputPin->PinToolTip = FString::Printf(TEXT("Output: %s (from tag)"), *Conn.OutputName);
@@ -534,7 +567,10 @@ void USourceIOGraph::RebuildConnections()
 			if (!InputPin)
 			{
 				// Create the pin dynamically if it doesn't exist
-				InputPin = TargetNode->CreatePin(EGPD_Input, TEXT("SourceIO"), FName(*Conn.InputName));
+				FEdGraphPinType DynInType;
+				DynInType.PinCategory = TEXT("SourceIO");
+				DynInType.PinSubCategory = TEXT("Input");
+				InputPin = TargetNode->CreatePin(EGPD_Input, DynInType, FName(*Conn.InputName));
 				if (InputPin)
 				{
 					InputPin->PinToolTip = FString::Printf(TEXT("Input: %s (from tag)"), *Conn.InputName);

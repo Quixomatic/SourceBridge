@@ -26,18 +26,18 @@ public:
 	/** Unregister this customization. */
 	static void Unregister();
 
+	/** Get a keyvalue from the actor, falling back to FGD default. */
+	static FString GetKeyValue(ASourceEntityActor* Actor, const FFGDProperty& Prop);
+
+	/** Set a keyvalue on the actor and mark it dirty. */
+	static void SetKeyValue(ASourceEntityActor* Actor, const FString& Key, const FString& Value);
+
 private:
 	/** Build property widgets for a resolved FGD entity class. */
 	void BuildFGDPropertyWidgets(
 		IDetailLayoutBuilder& DetailBuilder,
 		ASourceEntityActor* Actor,
 		const FFGDEntityClass& Resolved);
-
-	/** Get a keyvalue from the actor, falling back to FGD default. */
-	static FString GetKeyValue(ASourceEntityActor* Actor, const FFGDProperty& Prop);
-
-	/** Set a keyvalue on the actor and mark it dirty. */
-	static void SetKeyValue(ASourceEntityActor* Actor, const FString& Key, const FString& Value);
 
 	/** Cached weak pointer to the actor being customized. */
 	TWeakObjectPtr<ASourceEntityActor> CachedActor;

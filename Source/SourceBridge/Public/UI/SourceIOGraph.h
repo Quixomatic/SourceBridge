@@ -34,6 +34,12 @@ public:
 	/** Whether FGD data was found for this entity. */
 	bool bHasFGDData = false;
 
+	/** Whether the properties section is expanded. */
+	bool bShowProperties = false;
+
+	/** Whether the connections section is expanded. */
+	bool bShowConnections = false;
+
 	// --- UEdGraphNode overrides ---
 	virtual void AllocateDefaultPins() override;
 	virtual FText GetNodeTitle(ENodeTitleType::Type TitleType) const override;
@@ -77,6 +83,7 @@ public:
 	virtual void BreakSinglePinLink(UEdGraphPin* SourcePin, UEdGraphPin* TargetPin) const override;
 	virtual void GetGraphContextActions(FGraphContextMenuBuilder& ContextMenuBuilder) const override;
 	virtual FLinearColor GetPinTypeColor(const FEdGraphPinType& PinType) const override;
+	virtual class FConnectionDrawingPolicy* CreateConnectionDrawingPolicy(int32 InBackLayerID, int32 InFrontLayerID, float InZoomFactor, const FSlateRect& InClippingRect, class FSlateWindowElementList& InDrawElements, class UEdGraph* InGraphObj) const override;
 
 	static void RemoveIOTagForConnection(UEdGraphPin* OutputPin, UEdGraphPin* InputPin);
 };
