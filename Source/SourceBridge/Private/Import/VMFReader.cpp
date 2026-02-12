@@ -154,7 +154,10 @@ FString FVMFReader::ReadQuotedString(const FString& Content, int32& Pos)
 				continue;
 			}
 		}
-		Result += Content[Pos++];
+		// BSPSource decompiles I/O connections with 0x1b (ESC) as field separator
+		// instead of commas. Normalize to comma so downstream parsing works.
+		TCHAR Ch = Content[Pos++];
+		Result += (Ch == TEXT('\x1b')) ? TEXT(',') : Ch;
 	}
 
 	if (Pos < Len) Pos++; // skip closing quote
