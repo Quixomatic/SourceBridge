@@ -196,8 +196,18 @@ FReply SSourceEntityPalette::OnSpawnEntity(TSharedPtr<FEntityPaletteEntry> Entry
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
-	ASourceEntityActor* NewActor = World->SpawnActor<ASourceEntityActor>(
-		ASourceEntityActor::StaticClass(), SpawnLocation, SpawnRotation, SpawnParams);
+	// Spawn the appropriate actor class based on whether this is a brush entity
+	ASourceEntityActor* NewActor = nullptr;
+	if (Entry->bIsSolid)
+	{
+		NewActor = World->SpawnActor<ASourceBrushEntity>(
+			ASourceBrushEntity::StaticClass(), SpawnLocation, SpawnRotation, SpawnParams);
+	}
+	else
+	{
+		NewActor = World->SpawnActor<ASourceGenericEntity>(
+			ASourceGenericEntity::StaticClass(), SpawnLocation, SpawnRotation, SpawnParams);
+	}
 
 	if (NewActor)
 	{

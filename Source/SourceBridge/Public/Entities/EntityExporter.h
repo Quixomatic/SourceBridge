@@ -87,6 +87,13 @@ public:
 	 */
 	static FVMFKeyValues EntityToVMF(const FSourceEntity& Entity, int32 EntityId);
 
+	/**
+	 * Convert a FSourceEntity (brush entity with stored solid data) to a VMF entity block.
+	 * Includes solid children reconstructed from stored plane/UV/material data.
+	 */
+	static FVMFKeyValues BrushEntityToVMF(const FSourceEntity& Entity, int32 EntityId,
+		class ASourceBrushEntity* BrushActor);
+
 private:
 	/** Try to export a PlayerStart actor as team spawns. */
 	static bool TryExportPlayerStart(AActor* Actor, FEntityExportResult& Result);
@@ -102,6 +109,9 @@ private:
 
 	/** Try to export an overlay/decal (actor tagged with "overlay:material"). */
 	static bool TryExportOverlay(AActor* Actor, FEntityExportResult& Result);
+
+	/** Try to export a brush entity (ASourceBrushEntity). */
+	static bool TryExportBrushEntity(AActor* Actor, FEntityExportResult& Result);
 
 	/** Parse actor tags for I/O connections, targetname, and keyvalues. */
 	static void ParseActorTags(AActor* Actor, FSourceEntity& Entity);

@@ -13,6 +13,7 @@
 #include "Engine/PointLight.h"
 #include "Engine/SpotLight.h"
 #include "Engine/DirectionalLight.h"
+#include "Import/VMFImporter.h"
 
 // ---- FSourceEntity ----
 
@@ -78,6 +79,11 @@ FEntityExportResult FEntityExporter::ExportEntities(UWorld* World)
 			continue;
 		}
 
+		if (TryExportBrushEntity(Actor, Result))
+		{
+			continue;
+		}
+
 		// Export custom ASourceEntityActor instances
 		ASourceEntityActor* SourceActor = Cast<ASourceEntityActor>(Actor);
 		if (SourceActor && !SourceActor->SourceClassname.IsEmpty())
@@ -87,6 +93,12 @@ FEntityExportResult FEntityExporter::ExportEntities(UWorld* World)
 			Entity.TargetName = SourceActor->TargetName;
 			Entity.Origin = SourceActor->GetActorLocation();
 			Entity.Angles = SourceActor->GetActorRotation();
+
+			// Parentname
+			if (!SourceActor->ParentName.IsEmpty())
+			{
+				Entity.AddKeyValue(TEXT("parentname"), SourceActor->ParentName);
+			}
 
 			// Copy user-defined keyvalues
 			for (const auto& KV : SourceActor->KeyValues)
@@ -619,6 +631,124 @@ bool FEntityExporter::TryExportWaterVolume(AActor* Actor, FEntityExportResult& R
 
 	Result.Entities.Add(MoveTemp(Entity));
 	return true;
+}
+
+bool FEntityExporter::TryExportBrushEntity(AActor* Actor, FEntityExportResult& Result)
+{
+	ASourceBrushEntity* BrushEntity = Cast<ASourceBrushEntity>(Actor);
+	if (!BrushEntity || BrushEntity->SourceClassname.IsEmpty())
+	{
+		return false;
+	}
+
+	FSourceEntity Entity;
+	Entity.ClassName = BrushEntity->SourceClassname;
+	Entity.TargetName = BrushEntity->TargetName;
+	Entity.Origin = BrushEntity->GetActorLocation();
+	Entity.Angles = BrushEntity->GetActorRotation();
+	Entity.bIsBrushEntity = true;
+	Entity.SourceActor = BrushEntity;
+
+	// Parentname
+	if (!BrushEntity->ParentName.IsEmpty())
+	{
+		Entity.AddKeyValue(TEXT("parentname"), BrushEntity->ParentName);
+	}
+
+	// Copy all keyvalues
+	for (const auto& KV : BrushEntity->KeyValues)
+	{
+		Entity.AddKeyValue(KV.Key, KV.Value);
+	}
+
+	// Spawnflags
+	if (BrushEntity->SpawnFlags != 0)
+	{
+		Entity.AddKeyValue(TEXT("spawnflags"), BrushEntity->SpawnFlags);
+	}
+
+	// Parse actor tags for I/O connections
+	ParseActorTags(BrushEntity, Entity);
+
+	Result.Entities.Add(MoveTemp(Entity));
+	return true;
+}
+
+FVMFKeyValues FEntityExporter::BrushEntityToVMF(const FSourceEntity& Entity, int32 EntityId,
+	ASourceBrushEntity* BrushActor)
+{
+	FVMFKeyValues Node(TEXT("entity"));
+	Node.AddProperty(TEXT("id"), EntityId);
+	Node.AddProperty(TEXT("classname"), Entity.ClassName);
+
+	if (!Entity.TargetName.IsEmpty())
+	{
+		Node.AddProperty(TEXT("targetname"), Entity.TargetName);
+	}
+
+	// Origin in Source coordinates
+	FVector SourceOrigin = FSourceCoord::UEToSource(Entity.Origin);
+	Node.AddProperty(TEXT("origin"), FSourceCoord::FormatVector(SourceOrigin));
+
+	// Angles
+	FString AnglesStr = FSourceCoord::UERotationToSourceAngles(Entity.Angles);
+	Node.AddProperty(TEXT("angles"), AnglesStr);
+
+	// Additional key-values
+	for (const auto& KV : Entity.KeyValues)
+	{
+		Node.AddProperty(KV.Key, KV.Value);
+	}
+
+	// Entity I/O connections
+	if (Entity.Connections.Num() > 0)
+	{
+		FVMFKeyValues& ConnBlock = Node.AddChild(TEXT("connections"));
+		for (const FEntityIOConnection& Conn : Entity.Connections)
+		{
+			ConnBlock.AddProperty(Conn.OutputName, Conn.FormatValue());
+		}
+	}
+
+	// Write solid children from stored brush data
+	if (BrushActor)
+	{
+		int32 SolidIdCounter = EntityId * 100; // Generate unique IDs
+		for (const FImportedBrushData& BrushData : BrushActor->StoredBrushData)
+		{
+			FVMFKeyValues& SolidNode = Node.AddChild(TEXT("solid"));
+			SolidNode.AddProperty(TEXT("id"), BrushData.SolidId > 0 ? BrushData.SolidId : SolidIdCounter++);
+
+			int32 SideIdCounter = SolidIdCounter * 10;
+			for (const FImportedSideData& Side : BrushData.Sides)
+			{
+				FVMFKeyValues& SideNode = SolidNode.AddChild(TEXT("side"));
+				SideNode.AddProperty(TEXT("id"), SideIdCounter++);
+
+				// Plane: reconstruct from stored points
+				FString PlaneStr = FString::Printf(TEXT("(%g %g %g) (%g %g %g) (%g %g %g)"),
+					Side.PlaneP1.X, Side.PlaneP1.Y, Side.PlaneP1.Z,
+					Side.PlaneP2.X, Side.PlaneP2.Y, Side.PlaneP2.Z,
+					Side.PlaneP3.X, Side.PlaneP3.Y, Side.PlaneP3.Z);
+				SideNode.AddProperty(TEXT("plane"), PlaneStr);
+
+				SideNode.AddProperty(TEXT("material"), Side.Material);
+
+				if (!Side.UAxisStr.IsEmpty())
+				{
+					SideNode.AddProperty(TEXT("uaxis"), Side.UAxisStr);
+				}
+				if (!Side.VAxisStr.IsEmpty())
+				{
+					SideNode.AddProperty(TEXT("vaxis"), Side.VAxisStr);
+				}
+
+				SideNode.AddProperty(TEXT("lightmapscale"), FString::FromInt(Side.LightmapScale));
+			}
+		}
+	}
+
+	return Node;
 }
 
 bool FEntityExporter::TryExportOverlay(AActor* Actor, FEntityExportResult& Result)

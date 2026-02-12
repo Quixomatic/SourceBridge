@@ -3,7 +3,60 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
 #include "Components/StaticMeshComponent.h"
+#include "ProceduralMeshComponent.h"
 #include "SourceEntityActor.generated.h"
+
+/**
+ * Stores per-side (face) data from an imported VMF solid for lossless re-export.
+ */
+USTRUCT()
+struct FImportedSideData
+{
+	GENERATED_BODY()
+
+	/** Source plane definition points (3 points in Source coordinates). */
+	UPROPERTY()
+	FVector PlaneP1 = FVector::ZeroVector;
+
+	UPROPERTY()
+	FVector PlaneP2 = FVector::ZeroVector;
+
+	UPROPERTY()
+	FVector PlaneP3 = FVector::ZeroVector;
+
+	/** Source material path (e.g., "TOOLS/TOOLSNODRAW"). */
+	UPROPERTY()
+	FString Material;
+
+	/** Texture U axis string (e.g., "[1 0 0 0] 0.25"). */
+	UPROPERTY()
+	FString UAxisStr;
+
+	/** Texture V axis string (e.g., "[0 -1 0 0] 0.25"). */
+	UPROPERTY()
+	FString VAxisStr;
+
+	/** Lightmap scale. */
+	UPROPERTY()
+	int32 LightmapScale = 16;
+};
+
+/**
+ * Stores per-solid data from an imported VMF brush entity for lossless re-export.
+ */
+USTRUCT()
+struct FImportedBrushData
+{
+	GENERATED_BODY()
+
+	/** Per-face side data (plane points, material, UV axes). */
+	UPROPERTY()
+	TArray<FImportedSideData> Sides;
+
+	/** Original VMF solid ID (for reference). */
+	UPROPERTY()
+	int32 SolidId = 0;
+};
 
 /**
  * Base actor class for Source engine entities placed in UE.
@@ -25,6 +78,10 @@ public:
 	/** Source engine targetname for I/O connections. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Source Entity")
 	FString TargetName;
+
+	/** Source engine parentname for entity parent-child attachment. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Source Entity")
+	FString ParentName;
 
 	/** Additional key-values exported to VMF. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Source Entity")
@@ -186,15 +243,30 @@ public:
 };
 
 /**
- * Source engine func_detail/func_wall/func_door brush entity.
+ * Generic brush entity actor for Source engine brush entities.
+ * Owns one or more ProceduralMeshComponent children (one per solid in the entity).
+ * Stores original VMF plane/UV/material data for lossless round-trip export.
+ * Works with ANY brush entity classname (func_detail, func_clip_vphysics, func_door, etc.).
+ * The FGD-driven detail panel auto-generates property UI based on SourceClassname.
  */
-UCLASS(Blueprintable, ClassGroup = "SourceBridge", meta = (DisplayName = "Source Func Brush"))
-class SOURCEBRIDGE_API ASourceFuncBrush : public ASourceEntityActor
+UCLASS(Blueprintable, ClassGroup = "SourceBridge", meta = (DisplayName = "Source Brush Entity"))
+class SOURCEBRIDGE_API ASourceBrushEntity : public ASourceEntityActor
 {
 	GENERATED_BODY()
 
 public:
-	ASourceFuncBrush();
+	ASourceBrushEntity();
+
+	/** Procedural mesh components for each solid in this brush entity. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Source Brush Entity")
+	TArray<TObjectPtr<UProceduralMeshComponent>> BrushMeshes;
+
+	/** Original VMF solid data for lossless re-export. One entry per solid. */
+	UPROPERTY()
+	TArray<FImportedBrushData> StoredBrushData;
+
+	/** Add a ProceduralMeshComponent to this entity (called by VMFImporter). */
+	UProceduralMeshComponent* AddBrushMesh(const FString& MeshName);
 };
 
 /**

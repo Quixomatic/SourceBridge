@@ -3,6 +3,7 @@
 #include "Components/BillboardComponent.h"
 #include "Components/ArrowComponent.h"
 #include "Components/CapsuleComponent.h"
+#include "ProceduralMeshComponent.h"
 
 // ---- Base ----
 
@@ -132,11 +133,24 @@ void ASourceProp::SetStaticMesh(UStaticMesh* Mesh)
 	}
 }
 
-// ---- Func Brush ----
+// ---- Brush Entity ----
 
-ASourceFuncBrush::ASourceFuncBrush()
+ASourceBrushEntity::ASourceBrushEntity()
 {
 	SourceClassname = TEXT("func_detail");
+}
+
+UProceduralMeshComponent* ASourceBrushEntity::AddBrushMesh(const FString& MeshName)
+{
+	UProceduralMeshComponent* ProcMesh = NewObject<UProceduralMeshComponent>(this, *MeshName);
+	if (ProcMesh)
+	{
+		ProcMesh->AttachToComponent(RootComponent, FAttachmentTransformRules::KeepRelativeTransform);
+		ProcMesh->SetRelativeTransform(FTransform::Identity);
+		ProcMesh->RegisterComponent();
+		BrushMeshes.Add(ProcMesh);
+	}
+	return ProcMesh;
 }
 
 // ---- Env Sprite ----

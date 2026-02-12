@@ -89,7 +89,7 @@ FVMFImportResult FVMFImporter::ImportBlocks(const TArray<FVMFKeyValues>& Blocks,
 
 		if (Block.ClassName.Equals(TEXT("world"), ESearchCase::IgnoreCase))
 		{
-			// Import worldspawn solids
+			// Import worldspawn solids as plain brushes (not entities)
 			if (Settings.bImportBrushes)
 			{
 				for (const FVMFKeyValues& Child : Block.Children)
@@ -128,40 +128,11 @@ FVMFImportResult FVMFImporter::ImportBlocks(const TArray<FVMFKeyValues>& Blocks,
 
 			if (bHasSolids && Settings.bImportBrushes)
 			{
-				// Brush entity: import solids, tag with classname
-				FString EntityClass;
-				FString TargetName;
-				for (const auto& Prop : Block.Properties)
+				// Brush entity: create ONE ASourceBrushEntity with all solids as children
+				ASourceBrushEntity* BrushEntity = ImportBrushEntity(Block, World, Settings, Result);
+				if (BrushEntity)
 				{
-					if (Prop.Key.Equals(TEXT("classname"), ESearchCase::IgnoreCase))
-						EntityClass = Prop.Value;
-					else if (Prop.Key.Equals(TEXT("targetname"), ESearchCase::IgnoreCase))
-						TargetName = Prop.Value;
-				}
-
-				for (const FVMFKeyValues& Child : Block.Children)
-				{
-					if (Child.ClassName.Equals(TEXT("solid"), ESearchCase::IgnoreCase))
-					{
-						ABrush* Brush = ImportSolid(Child, World, Settings, Result);
-						if (Brush)
-						{
-							// Tag the brush with entity class info
-							if (!EntityClass.IsEmpty())
-							{
-								Brush->Tags.Add(*FString::Printf(TEXT("source:%s"), *EntityClass));
-							}
-							if (!TargetName.IsEmpty())
-							{
-								Brush->Tags.Add(*FString::Printf(TEXT("targetname:%s"), *TargetName));
-								Brush->SetActorLabel(FString::Printf(TEXT("%s (%s)"), *TargetName, *EntityClass));
-							}
-							else if (!EntityClass.IsEmpty())
-							{
-								Brush->SetActorLabel(EntityClass);
-							}
-						}
-					}
+					Result.SpawnedEntities.Add(BrushEntity);
 				}
 			}
 			else
@@ -171,9 +142,11 @@ FVMFImportResult FVMFImporter::ImportBlocks(const TArray<FVMFKeyValues>& Blocks,
 		}
 	}
 
-	// Each brush has its own ProceduralMeshComponent for rendering, so no
-	// csgRebuild needed. Just redraw the viewports.
-	if (Result.BrushesImported > 0 && GEditor)
+	// Resolve parentname relationships after all entities are spawned
+	ResolveParentNames(Result);
+
+	// Redraw viewports
+	if ((Result.BrushesImported > 0 || Result.EntitiesImported > 0) && GEditor)
 	{
 		GEditor->RedrawLevelEditingViewports(true);
 	}
@@ -377,7 +350,263 @@ TArray<TArray<FVector>> FVMFImporter::ReconstructFacesFromPlanes(
 	return Faces;
 }
 
-// ---- Brush Creation ----
+// ---- Solid Parsing (no actor creation) ----
+
+bool FVMFImporter::ParseSolid(const FVMFKeyValues& SolidBlock,
+	TArray<TArray<FVector>>& OutFaces,
+	TArray<FVector>& OutFaceNormals,
+	TArray<FVMFSideData>& OutSideData,
+	TArray<int32>& OutFaceToSideMapping,
+	FVMFImportResult& Result)
+{
+	TArray<FPlane> Planes;
+	TArray<FVector> PlaneFirstPoints;
+
+	OutFaceNormals.Empty();
+	OutSideData.Empty();
+	OutFaceToSideMapping.Empty();
+
+	for (const FVMFKeyValues& Child : SolidBlock.Children)
+	{
+		if (!Child.ClassName.Equals(TEXT("side"), ESearchCase::IgnoreCase)) continue;
+
+		FString PlaneStr;
+		FVMFSideData SideData;
+
+		for (const auto& Prop : Child.Properties)
+		{
+			if (Prop.Key.Equals(TEXT("plane"), ESearchCase::IgnoreCase))
+				PlaneStr = Prop.Value;
+			else if (Prop.Key.Equals(TEXT("material"), ESearchCase::IgnoreCase))
+				SideData.Material = Prop.Value;
+			else if (Prop.Key.Equals(TEXT("uaxis"), ESearchCase::IgnoreCase))
+			{
+				SideData.RawUAxisStr = Prop.Value;
+				ParseUVAxis(Prop.Value, SideData.UAxis, SideData.UOffset, SideData.UScale);
+			}
+			else if (Prop.Key.Equals(TEXT("vaxis"), ESearchCase::IgnoreCase))
+			{
+				SideData.RawVAxisStr = Prop.Value;
+				ParseUVAxis(Prop.Value, SideData.VAxis, SideData.VOffset, SideData.VScale);
+			}
+			else if (Prop.Key.Equals(TEXT("lightmapscale"), ESearchCase::IgnoreCase))
+				SideData.LightmapScale = FCString::Atoi(*Prop.Value);
+		}
+
+		if (PlaneStr.IsEmpty()) continue;
+
+		FVector P1, P2, P3;
+		if (!ParsePlanePoints(PlaneStr, P1, P2, P3))
+		{
+			Result.Warnings.Add(FString::Printf(TEXT("Failed to parse plane: %s"), *PlaneStr));
+			continue;
+		}
+
+		// Compute plane from 3 points
+		// VMF convention: (P2-P1)x(P3-P1) points INWARD
+		FVector Edge1 = P2 - P1;
+		FVector Edge2 = P3 - P1;
+		FVector Normal = FVector::CrossProduct(Edge1, Edge2);
+		if (Normal.IsNearlyZero())
+		{
+			Result.Warnings.Add(TEXT("Degenerate plane (collinear points), skipping face."));
+			continue;
+		}
+		Normal.Normalize();
+
+		// FPlane with inward normal: the solid is on the positive side
+		Planes.Add(FPlane(P1, Normal));
+		PlaneFirstPoints.Add(P1);
+		OutFaceNormals.Add(Normal);
+		OutSideData.Add(MoveTemp(SideData));
+	}
+
+	if (Planes.Num() < 4)
+	{
+		Result.Warnings.Add(TEXT("Solid has fewer than 4 valid planes, skipping."));
+		return false;
+	}
+
+	// Reconstruct face polygons via CSG clipping
+	OutFaces = ReconstructFacesFromPlanes(Planes, PlaneFirstPoints, OutFaceToSideMapping);
+
+	if (OutFaces.Num() < 4)
+	{
+		Result.Warnings.Add(TEXT("CSG reconstruction produced fewer than 4 faces, skipping solid."));
+		return false;
+	}
+
+	return true;
+}
+
+// ---- ProceduralMesh Builder (reusable for any actor) ----
+
+UProceduralMeshComponent* FVMFImporter::BuildProceduralMesh(
+	AActor* OwnerActor,
+	const FString& MeshName,
+	const TArray<TArray<FVector>>& Faces,
+	const TArray<FVector>& FaceNormals,
+	const TArray<FVMFSideData>& SideData,
+	const TArray<int32>& FaceToSideMapping,
+	const FVMFImportSettings& Settings,
+	const FVector& ActorCenter)
+{
+	if (!OwnerActor || Faces.Num() < 3) return nullptr;
+
+	float Scale = Settings.ScaleMultiplier;
+
+	UProceduralMeshComponent* ProcMesh = NewObject<UProceduralMeshComponent>(OwnerActor, *MeshName);
+	ProcMesh->AttachToComponent(OwnerActor->GetRootComponent(),
+		FAttachmentTransformRules::KeepRelativeTransform);
+	ProcMesh->SetRelativeTransform(FTransform::Identity);
+
+	// Resolve materials and compute normals for each face
+	struct FFaceData
+	{
+		UMaterialInterface* Material = nullptr;
+		const FVMFSideData* Side = nullptr;
+		FVector OutwardNormal = FVector::ZeroVector;
+		bool bFlipWinding = false;
+	};
+	TArray<FFaceData> FaceDataArray;
+	FaceDataArray.SetNum(Faces.Num());
+
+	for (int32 FaceIdx = 0; FaceIdx < Faces.Num(); FaceIdx++)
+	{
+		const TArray<FVector>& FaceVerts = Faces[FaceIdx];
+		if (FaceVerts.Num() < 3) continue;
+
+		int32 SideIdx = (FaceIdx < FaceToSideMapping.Num()) ? FaceToSideMapping[FaceIdx] : FaceIdx;
+		FFaceData& FD = FaceDataArray[FaceIdx];
+
+		if (SideIdx < SideData.Num())
+		{
+			FD.Side = &SideData[SideIdx];
+
+			if (Settings.bImportMaterials && !FD.Side->Material.IsEmpty())
+			{
+				FD.Material = FMaterialImporter::ResolveSourceMaterial(FD.Side->Material);
+			}
+		}
+
+		// Compute face normal from vertices (in UE local space)
+		// and determine outward direction by checking dot with face center from actor center
+		FVector FaceCenter = FVector::ZeroVector;
+		for (const FVector& V : FaceVerts)
+		{
+			FaceCenter += SourceToUE(V, Scale) - ActorCenter;
+		}
+		FaceCenter /= FaceVerts.Num();
+
+		// Compute winding normal
+		FVector V0 = SourceToUE(FaceVerts[0], Scale) - ActorCenter;
+		FVector V1 = SourceToUE(FaceVerts[1], Scale) - ActorCenter;
+		FVector V2 = SourceToUE(FaceVerts[2], Scale) - ActorCenter;
+		FVector WindingNormal = FVector::CrossProduct(V1 - V0, V2 - V0);
+		if (!WindingNormal.IsNearlyZero())
+		{
+			WindingNormal.Normalize();
+		}
+
+		bool bNormalPointsOutward = FVector::DotProduct(WindingNormal, FaceCenter) > 0.0f;
+		FD.OutwardNormal = bNormalPointsOutward ? WindingNormal : -WindingNormal;
+		FD.bFlipWinding = bNormalPointsOutward;
+	}
+
+	// Group faces by material into mesh sections
+	TMap<UMaterialInterface*, int32> MatToSection;
+	struct FSectionData
+	{
+		TArray<FVector> Vertices;
+		TArray<int32> Triangles;
+		TArray<FVector> Normals;
+		TArray<FVector2D> UVs;
+	};
+	TArray<FSectionData> Sections;
+	TArray<UMaterialInterface*> SectionMaterials;
+
+	for (int32 FaceIdx = 0; FaceIdx < Faces.Num(); FaceIdx++)
+	{
+		const TArray<FVector>& FaceVerts = Faces[FaceIdx];
+		if (FaceVerts.Num() < 3) continue;
+
+		const FFaceData& FD = FaceDataArray[FaceIdx];
+
+		int32* SecIdx = MatToSection.Find(FD.Material);
+		if (!SecIdx)
+		{
+			int32 NewIdx = Sections.Num();
+			MatToSection.Add(FD.Material, NewIdx);
+			Sections.AddDefaulted();
+			SectionMaterials.Add(FD.Material);
+			SecIdx = &MatToSection[FD.Material];
+		}
+
+		FSectionData& Sec = Sections[*SecIdx];
+		int32 BaseVert = Sec.Vertices.Num();
+
+		// Get texture dimensions for UV normalization
+		FIntPoint TexSize(512, 512);
+		if (FD.Side && !FD.Side->Material.IsEmpty())
+		{
+			TexSize = FMaterialImporter::GetTextureSize(FD.Side->Material);
+		}
+
+		for (const FVector& V : FaceVerts)
+		{
+			FVector LocalPos = SourceToUE(V, Scale) - ActorCenter;
+			Sec.Vertices.Add(LocalPos);
+			Sec.Normals.Add(FD.OutwardNormal);
+
+			if (FD.Side)
+			{
+				// Convert to Source world space for UV formula
+				FVector SourcePos(V);
+				float UTexel = FVector::DotProduct(SourcePos, FD.Side->UAxis) / FD.Side->UScale + FD.Side->UOffset;
+				float VTexel = FVector::DotProduct(SourcePos, FD.Side->VAxis) / FD.Side->VScale + FD.Side->VOffset;
+				Sec.UVs.Add(FVector2D(UTexel / (float)TexSize.X, VTexel / (float)TexSize.Y));
+			}
+			else
+			{
+				Sec.UVs.Add(FVector2D(0.0f, 0.0f));
+			}
+		}
+
+		// Fan triangulation
+		for (int32 i = 1; i < FaceVerts.Num() - 1; i++)
+		{
+			Sec.Triangles.Add(BaseVert);
+			if (FD.bFlipWinding)
+			{
+				Sec.Triangles.Add(BaseVert + i + 1);
+				Sec.Triangles.Add(BaseVert + i);
+			}
+			else
+			{
+				Sec.Triangles.Add(BaseVert + i);
+				Sec.Triangles.Add(BaseVert + i + 1);
+			}
+		}
+	}
+
+	for (int32 i = 0; i < Sections.Num(); i++)
+	{
+		ProcMesh->CreateMeshSection_LinearColor(i,
+			Sections[i].Vertices, Sections[i].Triangles,
+			Sections[i].Normals, Sections[i].UVs,
+			TArray<FLinearColor>(), TArray<FProcMeshTangent>(), true);
+
+		if (SectionMaterials[i])
+		{
+			ProcMesh->SetMaterial(i, SectionMaterials[i]);
+		}
+	}
+
+	ProcMesh->RegisterComponent();
+	return ProcMesh;
+}
+
+// ---- Brush Creation (worldspawn solids) ----
 
 ABrush* FVMFImporter::CreateBrushFromFaces(
 	UWorld* World,
@@ -418,7 +647,7 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 	Brush->BrushType = Brush_Add;
 	Brush->SetActorLabel(TEXT("ImportedBrush"));
 
-	UE_LOG(LogTemp, Log, TEXT("VMFImporter: Brush at (%f, %f, %f) with %d faces, %d verts"),
+	UE_LOG(LogTemp, Verbose, TEXT("VMFImporter: Brush at (%f, %f, %f) with %d faces, %d verts"),
 		Brush->GetActorLocation().X, Brush->GetActorLocation().Y, Brush->GetActorLocation().Z,
 		Faces.Num(), TotalVerts);
 
@@ -427,9 +656,6 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 	Model->Initialize(nullptr, true);
 	Model->Polys = NewObject<UPolys>(Model, NAME_None, RF_Transactional);
 	Brush->Brush = Model;
-
-	// Track which SideData index each successfully-added poly came from (for UV computation)
-	TArray<int32> PolyToSideIdx;
 
 	// Add faces as polys (matching UE's BrushBuilder pattern)
 	for (int32 FaceIdx = 0; FaceIdx < Faces.Num(); FaceIdx++)
@@ -441,25 +667,20 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 		Poly.Init();
 		Poly.iLink = FaceIdx;
 
-		// Add vertices in local space (relative to brush center)
 		for (const FVector& V : FaceVerts)
 		{
 			FVector UEPos = SourceToUE(V, Scale);
 			Poly.Vertices.Add(FVector3f(UEPos - Center));
 		}
 
-		// Base = first vertex (matches UE's BrushBuilder convention)
 		Poly.Base = Poly.Vertices[0];
 
-		// Map this face back to its original SideData via the face-to-plane mapping
 		int32 SideIdx = (FaceIdx < FaceToSideMapping.Num()) ? FaceToSideMapping[FaceIdx] : FaceIdx;
 
-		// Apply per-face data (material, UV axes)
 		if (SideIdx < SideData.Num())
 		{
 			const FVMFSideData& Side = SideData[SideIdx];
 
-			// Material: resolve Source path to UE material interface
 			if (Settings.bImportMaterials && !Side.Material.IsEmpty())
 			{
 				Poly.ItemName = FName(*Side.Material);
@@ -470,7 +691,6 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 				}
 			}
 
-			// Texture axes: convert Source UV axes to UE FPoly texture vectors
 			FVector UEUAxis = SourceDirToUE(Side.UAxis);
 			FVector UEVAxis = SourceDirToUE(Side.VAxis);
 
@@ -484,12 +704,9 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 			}
 		}
 
-		// Finalize: compute normal from vertex winding, validate polygon
-		// This is REQUIRED - UE's BrushBuilder always calls Finalize before adding polys
 		if (Poly.Finalize(Brush, 1) == 0)
 		{
 			Model->Polys->Element.Add(MoveTemp(Poly));
-			PolyToSideIdx.Add(SideIdx);
 		}
 		else
 		{
@@ -503,205 +720,28 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 	Brush->GetBrushComponent()->Brush = Model;
 	FBSPOps::csgPrepMovingBrush(Brush);
 
-	// Build a ProceduralMeshComponent on this brush for solid rendering with materials.
-	// Each brush renders independently (like Hammer), no csgRebuild merge needed.
-	{
-		UProceduralMeshComponent* ProcMesh = NewObject<UProceduralMeshComponent>(Brush, TEXT("BrushMesh"));
-		ProcMesh->AttachToComponent(Brush->GetRootComponent(),
-			FAttachmentTransformRules::KeepRelativeTransform);
-		ProcMesh->SetRelativeTransform(FTransform::Identity);
-
-		// Group faces by material into mesh sections
-		TMap<UMaterialInterface*, int32> MatToSection;
-		struct FSectionData
-		{
-			TArray<FVector> Vertices;
-			TArray<int32> Triangles;
-			TArray<FVector> Normals;
-			TArray<FVector2D> UVs;
-		};
-		TArray<FSectionData> Sections;
-		TArray<UMaterialInterface*> SectionMaterials;
-
-		for (int32 PolyIdx = 0; PolyIdx < Model->Polys->Element.Num(); PolyIdx++)
-		{
-			const FPoly& Poly = Model->Polys->Element[PolyIdx];
-			if (Poly.Vertices.Num() < 3) continue;
-
-			UMaterialInterface* Mat = Poly.Material;
-			int32* SecIdx = MatToSection.Find(Mat);
-			if (!SecIdx)
-			{
-				int32 NewIdx = Sections.Num();
-				MatToSection.Add(Mat, NewIdx);
-				Sections.AddDefaulted();
-				SectionMaterials.Add(Mat);
-				SecIdx = &MatToSection[Mat];
-			}
-
-			FSectionData& Sec = Sections[*SecIdx];
-			int32 BaseVert = Sec.Vertices.Num();
-
-			// Get the original Source UV data for this face
-			const FVMFSideData* Side = nullptr;
-			if (PolyIdx < PolyToSideIdx.Num() && PolyToSideIdx[PolyIdx] < SideData.Num())
-			{
-				Side = &SideData[PolyToSideIdx[PolyIdx]];
-			}
-
-			// Get texture dimensions for UV normalization
-			FIntPoint TexSize(512, 512);
-			if (Side && !Side->Material.IsEmpty())
-			{
-				TexSize = FMaterialImporter::GetTextureSize(Side->Material);
-			}
-
-			// Determine if Poly.Normal points outward (away from brush center).
-			// Brush vertices are in local space (center subtracted), so center = origin.
-			// For a convex solid, outward normal dot face position > 0.
-			bool bNormalPointsOutward = FVector::DotProduct(FVector(Poly.Normal), FVector(Poly.Base)) > 0.0f;
-			FVector OutwardNormal = bNormalPointsOutward ? FVector(Poly.Normal) : -FVector(Poly.Normal);
-
-			for (const FVector3f& V : Poly.Vertices)
-			{
-				Sec.Vertices.Add(FVector(V));
-				Sec.Normals.Add(OutwardNormal);
-
-				if (Side)
-				{
-					// Convert brush-local vertex back to Source world space for UV formula.
-					// V is in brush-local UE space. Add Center to get UE world space.
-					// Then reverse the SourceToUE conversion: divide by Scale, negate Y.
-					FVector UEWorld = FVector(V) + Center;
-					FVector SourcePos(UEWorld.X / Scale, -UEWorld.Y / Scale, UEWorld.Z / Scale);
-
-					// Source UV formula: u_texel = dot(pos, axis_dir) / scale + offset
-					float UTexel = FVector::DotProduct(SourcePos, Side->UAxis) / Side->UScale + Side->UOffset;
-					float VTexel = FVector::DotProduct(SourcePos, Side->VAxis) / Side->VScale + Side->VOffset;
-
-					// Normalize to 0-1 by dividing by texture dimensions
-					Sec.UVs.Add(FVector2D(UTexel / (float)TexSize.X, VTexel / (float)TexSize.Y));
-				}
-				else
-				{
-					Sec.UVs.Add(FVector2D(0.0f, 0.0f));
-				}
-			}
-
-			// Fan triangulation - winding depends on whether we need to flip
-			for (int32 i = 1; i < Poly.Vertices.Num() - 1; i++)
-			{
-				Sec.Triangles.Add(BaseVert);
-				if (bNormalPointsOutward)
-				{
-					// Normal outward: reverse winding for correct front-face
-					Sec.Triangles.Add(BaseVert + i + 1);
-					Sec.Triangles.Add(BaseVert + i);
-				}
-				else
-				{
-					// Normal inward: standard winding produces outward front-face
-					Sec.Triangles.Add(BaseVert + i);
-					Sec.Triangles.Add(BaseVert + i + 1);
-				}
-			}
-		}
-
-		for (int32 i = 0; i < Sections.Num(); i++)
-		{
-			ProcMesh->CreateMeshSection_LinearColor(i,
-				Sections[i].Vertices, Sections[i].Triangles,
-				Sections[i].Normals, Sections[i].UVs,
-				TArray<FLinearColor>(), TArray<FProcMeshTangent>(), true);
-
-			if (SectionMaterials[i])
-			{
-				ProcMesh->SetMaterial(i, SectionMaterials[i]);
-			}
-		}
-
-		ProcMesh->RegisterComponent();
-	}
+	// Build a ProceduralMeshComponent for solid rendering with materials
+	BuildProceduralMesh(Brush, TEXT("BrushMesh"), Faces, FaceNormals, SideData, FaceToSideMapping, Settings, Center);
 
 	return Brush;
 }
 
-// ---- Solid Import ----
+// ---- Solid Import (worldspawn) ----
 
 ABrush* FVMFImporter::ImportSolid(const FVMFKeyValues& SolidBlock, UWorld* World,
 	const FVMFImportSettings& Settings, FVMFImportResult& Result)
 {
-	TArray<FPlane> Planes;
-	TArray<FVector> PlaneFirstPoints;
-	TArray<FVector> InwardNormals;
+	TArray<TArray<FVector>> Faces;
+	TArray<FVector> FaceNormals;
 	TArray<FVMFSideData> SideDataArray;
+	TArray<int32> FaceToSideMapping;
 
-	for (const FVMFKeyValues& Child : SolidBlock.Children)
+	if (!ParseSolid(SolidBlock, Faces, FaceNormals, SideDataArray, FaceToSideMapping, Result))
 	{
-		if (!Child.ClassName.Equals(TEXT("side"), ESearchCase::IgnoreCase)) continue;
-
-		FString PlaneStr;
-		FVMFSideData SideData;
-
-		for (const auto& Prop : Child.Properties)
-		{
-			if (Prop.Key.Equals(TEXT("plane"), ESearchCase::IgnoreCase))
-				PlaneStr = Prop.Value;
-			else if (Prop.Key.Equals(TEXT("material"), ESearchCase::IgnoreCase))
-				SideData.Material = Prop.Value;
-			else if (Prop.Key.Equals(TEXT("uaxis"), ESearchCase::IgnoreCase))
-				ParseUVAxis(Prop.Value, SideData.UAxis, SideData.UOffset, SideData.UScale);
-			else if (Prop.Key.Equals(TEXT("vaxis"), ESearchCase::IgnoreCase))
-				ParseUVAxis(Prop.Value, SideData.VAxis, SideData.VOffset, SideData.VScale);
-			else if (Prop.Key.Equals(TEXT("lightmapscale"), ESearchCase::IgnoreCase))
-				SideData.LightmapScale = FCString::Atoi(*Prop.Value);
-		}
-
-		if (PlaneStr.IsEmpty()) continue;
-
-		FVector P1, P2, P3;
-		if (!ParsePlanePoints(PlaneStr, P1, P2, P3))
-		{
-			Result.Warnings.Add(FString::Printf(TEXT("Failed to parse plane: %s"), *PlaneStr));
-			continue;
-		}
-
-		// Compute plane from 3 points
-		// VMF convention: (P2-P1)×(P3-P1) points INWARD
-		FVector Edge1 = P2 - P1;
-		FVector Edge2 = P3 - P1;
-		FVector Normal = FVector::CrossProduct(Edge1, Edge2);
-		if (Normal.IsNearlyZero())
-		{
-			Result.Warnings.Add(TEXT("Degenerate plane (collinear points), skipping face."));
-			continue;
-		}
-		Normal.Normalize();
-
-		// FPlane with inward normal: the solid is on the positive side
-		Planes.Add(FPlane(P1, Normal));
-		PlaneFirstPoints.Add(P1);
-		InwardNormals.Add(Normal);
-		SideDataArray.Add(MoveTemp(SideData));
-	}
-
-	if (Planes.Num() < 4)
-	{
-		Result.Warnings.Add(TEXT("Solid has fewer than 4 valid planes, skipping."));
 		return nullptr;
 	}
 
-	// Reconstruct face polygons via CSG clipping
-	TArray<int32> FaceToPlaneIdx;
-	TArray<TArray<FVector>> Faces = ReconstructFacesFromPlanes(Planes, PlaneFirstPoints, FaceToPlaneIdx);
-
-	if (Faces.Num() < 4)
-	{
-		Result.Warnings.Add(TEXT("CSG reconstruction produced fewer than 4 faces, skipping solid."));
-		return nullptr;
-	}
-
-	ABrush* Brush = CreateBrushFromFaces(World, Faces, InwardNormals, SideDataArray, FaceToPlaneIdx, Settings);
+	ABrush* Brush = CreateBrushFromFaces(World, Faces, FaceNormals, SideDataArray, FaceToSideMapping, Settings);
 	if (Brush)
 	{
 		Result.BrushesImported++;
@@ -712,7 +752,279 @@ ABrush* FVMFImporter::ImportSolid(const FVMFKeyValues& SolidBlock, UWorld* World
 	return nullptr;
 }
 
-// ---- Entity Import ----
+// ---- Brush Entity Import ----
+
+ASourceBrushEntity* FVMFImporter::ImportBrushEntity(const FVMFKeyValues& EntityBlock, UWorld* World,
+	const FVMFImportSettings& Settings, FVMFImportResult& Result)
+{
+	float Scale = Settings.ScaleMultiplier;
+
+	// First pass: parse all solids to compute the entity's overall center
+	struct FSolidParseResult
+	{
+		TArray<TArray<FVector>> Faces;
+		TArray<FVector> FaceNormals;
+		TArray<FVMFSideData> SideData;
+		TArray<int32> FaceToSideMapping;
+		const FVMFKeyValues* OriginalBlock = nullptr;
+	};
+	TArray<FSolidParseResult> ParsedSolids;
+
+	FVector AllVertsSum = FVector::ZeroVector;
+	int32 AllVertsCount = 0;
+
+	for (const FVMFKeyValues& Child : EntityBlock.Children)
+	{
+		if (!Child.ClassName.Equals(TEXT("solid"), ESearchCase::IgnoreCase)) continue;
+
+		FSolidParseResult Parsed;
+		Parsed.OriginalBlock = &Child;
+
+		if (ParseSolid(Child, Parsed.Faces, Parsed.FaceNormals, Parsed.SideData, Parsed.FaceToSideMapping, Result))
+		{
+			// Accumulate vertex positions for center computation
+			for (const auto& Face : Parsed.Faces)
+			{
+				for (const FVector& V : Face)
+				{
+					AllVertsSum += SourceToUE(V, Scale);
+					AllVertsCount++;
+				}
+			}
+			ParsedSolids.Add(MoveTemp(Parsed));
+		}
+	}
+
+	if (ParsedSolids.Num() == 0 || AllVertsCount == 0)
+	{
+		Result.Warnings.Add(TEXT("Brush entity has no valid solids, skipping."));
+		return nullptr;
+	}
+
+	// Entity center = average of all solid vertices
+	FVector EntityCenter = AllVertsSum / AllVertsCount;
+
+	// Check for an explicit "origin" keyvalue (some brush entities specify one)
+	for (const auto& Prop : EntityBlock.Properties)
+	{
+		if (Prop.Key.Equals(TEXT("origin"), ESearchCase::IgnoreCase) && !Prop.Value.IsEmpty())
+		{
+			FVector SourceOrigin = ParseOrigin(Prop.Value);
+			EntityCenter = SourceToUE(SourceOrigin, Scale);
+			break;
+		}
+	}
+
+	// Spawn the entity actor
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	FTransform SpawnTransform;
+	SpawnTransform.SetLocation(EntityCenter);
+
+	ASourceBrushEntity* Entity = World->SpawnActor<ASourceBrushEntity>(
+		ASourceBrushEntity::StaticClass(), SpawnTransform, SpawnParams);
+	if (!Entity)
+	{
+		Result.Warnings.Add(TEXT("Failed to spawn ASourceBrushEntity."));
+		return nullptr;
+	}
+	Entity->SetActorLocation(EntityCenter);
+
+	// Apply all entity properties (classname, targetname, parentname, keyvalues, spawnflags, I/O)
+	ApplyEntityProperties(Entity, EntityBlock);
+
+	// Set actor label
+	if (!Entity->TargetName.IsEmpty())
+	{
+		Entity->SetActorLabel(FString::Printf(TEXT("%s (%s)"), *Entity->TargetName, *Entity->SourceClassname));
+	}
+	else
+	{
+		Entity->SetActorLabel(Entity->SourceClassname);
+	}
+
+	// Build ProceduralMeshComponent for each solid and store brush data for re-export
+	for (int32 SolidIdx = 0; SolidIdx < ParsedSolids.Num(); SolidIdx++)
+	{
+		const FSolidParseResult& Parsed = ParsedSolids[SolidIdx];
+
+		// Build the visual mesh
+		FString MeshName = FString::Printf(TEXT("BrushMesh_%d"), SolidIdx);
+		UProceduralMeshComponent* ProcMesh = BuildProceduralMesh(
+			Entity, MeshName,
+			Parsed.Faces, Parsed.FaceNormals, Parsed.SideData, Parsed.FaceToSideMapping,
+			Settings, EntityCenter);
+
+		if (ProcMesh)
+		{
+			Entity->BrushMeshes.Add(ProcMesh);
+		}
+
+		// Store original solid data for lossless re-export
+		FImportedBrushData BrushData;
+		// Try to get solid ID from VMF
+		if (Parsed.OriginalBlock)
+		{
+			for (const auto& Prop : Parsed.OriginalBlock->Properties)
+			{
+				if (Prop.Key.Equals(TEXT("id"), ESearchCase::IgnoreCase))
+				{
+					BrushData.SolidId = FCString::Atoi(*Prop.Value);
+					break;
+				}
+			}
+		}
+
+		// Store per-side data for re-export
+		for (int32 SideIdx = 0; SideIdx < Parsed.SideData.Num(); SideIdx++)
+		{
+			const FVMFSideData& Side = Parsed.SideData[SideIdx];
+
+			FImportedSideData ImportedSide;
+			ImportedSide.Material = Side.Material;
+			ImportedSide.UAxisStr = Side.RawUAxisStr;
+			ImportedSide.VAxisStr = Side.RawVAxisStr;
+			ImportedSide.LightmapScale = Side.LightmapScale;
+
+			// Get original plane points from the VMF block
+			if (Parsed.OriginalBlock)
+			{
+				int32 CurrentSide = 0;
+				for (const FVMFKeyValues& SideBlock : Parsed.OriginalBlock->Children)
+				{
+					if (!SideBlock.ClassName.Equals(TEXT("side"), ESearchCase::IgnoreCase)) continue;
+
+					if (CurrentSide == SideIdx)
+					{
+						for (const auto& Prop : SideBlock.Properties)
+						{
+							if (Prop.Key.Equals(TEXT("plane"), ESearchCase::IgnoreCase))
+							{
+								ParsePlanePoints(Prop.Value, ImportedSide.PlaneP1, ImportedSide.PlaneP2, ImportedSide.PlaneP3);
+								break;
+							}
+						}
+						break;
+					}
+					CurrentSide++;
+				}
+			}
+
+			BrushData.Sides.Add(MoveTemp(ImportedSide));
+		}
+
+		Entity->StoredBrushData.Add(MoveTemp(BrushData));
+		Result.BrushesImported++;
+	}
+
+	Result.EntitiesImported++;
+
+	UE_LOG(LogTemp, Log, TEXT("VMFImporter: Brush entity '%s' (%s) with %d solids at (%f, %f, %f)"),
+		*Entity->TargetName, *Entity->SourceClassname, ParsedSolids.Num(),
+		EntityCenter.X, EntityCenter.Y, EntityCenter.Z);
+
+	return Entity;
+}
+
+// ---- Common Entity Property Setter ----
+
+void FVMFImporter::ApplyEntityProperties(ASourceEntityActor* Entity, const FVMFKeyValues& EntityBlock)
+{
+	if (!Entity) return;
+
+	for (const auto& Prop : EntityBlock.Properties)
+	{
+		if (Prop.Key.Equals(TEXT("classname"), ESearchCase::IgnoreCase))
+		{
+			Entity->SourceClassname = Prop.Value;
+		}
+		else if (Prop.Key.Equals(TEXT("targetname"), ESearchCase::IgnoreCase))
+		{
+			Entity->TargetName = Prop.Value;
+		}
+		else if (Prop.Key.Equals(TEXT("parentname"), ESearchCase::IgnoreCase))
+		{
+			Entity->ParentName = Prop.Value;
+		}
+		else if (Prop.Key.Equals(TEXT("spawnflags"), ESearchCase::IgnoreCase))
+		{
+			Entity->SpawnFlags = FCString::Atoi(*Prop.Value);
+		}
+		else if (!Prop.Key.Equals(TEXT("origin"), ESearchCase::IgnoreCase) &&
+				 !Prop.Key.Equals(TEXT("angles"), ESearchCase::IgnoreCase))
+		{
+			// Store all other keyvalues (origin/angles handled separately by caller)
+			Entity->KeyValues.Add(Prop.Key, Prop.Value);
+		}
+	}
+
+	// Parse I/O connections and store as actor tags
+	for (const FVMFKeyValues& Child : EntityBlock.Children)
+	{
+		if (Child.ClassName.Equals(TEXT("connections"), ESearchCase::IgnoreCase))
+		{
+			for (const auto& Conn : Child.Properties)
+			{
+				FString Tag = FString::Printf(TEXT("io:%s:%s"), *Conn.Key, *Conn.Value);
+				Entity->Tags.Add(*Tag);
+			}
+		}
+	}
+}
+
+// ---- Parentname Resolution ----
+
+void FVMFImporter::ResolveParentNames(const FVMFImportResult& Result)
+{
+	// Build a map from targetname to entity actor
+	TMap<FString, ASourceEntityActor*> TargetNameMap;
+	for (const TWeakObjectPtr<ASourceEntityActor>& WeakEntity : Result.SpawnedEntities)
+	{
+		ASourceEntityActor* Entity = WeakEntity.Get();
+		if (Entity && !Entity->TargetName.IsEmpty())
+		{
+			TargetNameMap.Add(Entity->TargetName, Entity);
+		}
+	}
+
+	if (TargetNameMap.Num() == 0) return;
+
+	int32 AttachmentsResolved = 0;
+	for (const TWeakObjectPtr<ASourceEntityActor>& WeakEntity : Result.SpawnedEntities)
+	{
+		ASourceEntityActor* Entity = WeakEntity.Get();
+		if (!Entity || Entity->ParentName.IsEmpty()) continue;
+
+		// Handle "entity,attachment" syntax - extract just the entity targetname
+		FString ParentTargetName = Entity->ParentName;
+		int32 CommaIdx;
+		if (ParentTargetName.FindChar(TEXT(','), CommaIdx))
+		{
+			ParentTargetName = ParentTargetName.Left(CommaIdx);
+		}
+
+		ASourceEntityActor** ParentPtr = TargetNameMap.Find(ParentTargetName);
+		if (ParentPtr && *ParentPtr)
+		{
+			Entity->AttachToActor(*ParentPtr, FAttachmentTransformRules::KeepWorldTransform);
+			AttachmentsResolved++;
+			UE_LOG(LogTemp, Log, TEXT("VMFImporter: Attached '%s' to parent '%s'"),
+				*Entity->TargetName, *ParentTargetName);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("VMFImporter: Entity '%s' has parentname '%s' but no matching entity found"),
+				*Entity->TargetName, *Entity->ParentName);
+		}
+	}
+
+	if (AttachmentsResolved > 0)
+	{
+		UE_LOG(LogTemp, Log, TEXT("VMFImporter: Resolved %d parent-child attachments"), AttachmentsResolved);
+	}
+}
+
+// ---- Point Entity Import ----
 
 bool FVMFImporter::ImportPointEntity(const FVMFKeyValues& EntityBlock, UWorld* World,
 	const FVMFImportSettings& Settings, FVMFImportResult& Result)
@@ -947,7 +1259,6 @@ bool FVMFImporter::ImportPointEntity(const FVMFKeyValues& EntityBlock, UWorld* W
 					{
 						if (Prop->FadeMinDist > 0.0f)
 						{
-							// Convert Source units to UE units (Source units ÷ 0.525)
 							Prop->MeshComponent->LDMaxDrawDistance = Prop->FadeMaxDist / 0.525f;
 							Prop->MeshComponent->bNeverDistanceCull = false;
 						}
@@ -1009,44 +1320,21 @@ bool FVMFImporter::ImportPointEntity(const FVMFKeyValues& EntityBlock, UWorld* W
 
 	if (!Entity) return false;
 
-	// Set common properties
-	Entity->SourceClassname = ClassName;
-	if (!TargetName.IsEmpty())
+	// Apply common properties using shared helper
+	ApplyEntityProperties(Entity, EntityBlock);
+
+	// Set actor label
+	if (!Entity->TargetName.IsEmpty())
 	{
-		Entity->TargetName = TargetName;
-		Entity->SetActorLabel(TargetName);
+		Entity->SetActorLabel(Entity->TargetName);
 	}
 	else
 	{
 		Entity->SetActorLabel(ClassName);
 	}
 
-	// Store remaining key-values
-	for (const auto& KV : KeyValues)
-	{
-		Entity->KeyValues.Add(KV.Key, KV.Value);
-	}
-
-	// Parse spawnflags
-	const FString* SpawnFlagsStr = Entity->KeyValues.Find(TEXT("spawnflags"));
-	if (SpawnFlagsStr)
-	{
-		Entity->SpawnFlags = FCString::Atoi(**SpawnFlagsStr);
-	}
-
-	// Parse I/O connections and store as actor tags (io:OutputName:target,input,param,delay,refire)
-	for (const FVMFKeyValues& Child : EntityBlock.Children)
-	{
-		if (Child.ClassName.Equals(TEXT("connections"), ESearchCase::IgnoreCase))
-		{
-			for (const auto& Conn : Child.Properties)
-			{
-				// Conn.Key = OutputName, Conn.Value = "target,input,param,delay,refire"
-				FString Tag = FString::Printf(TEXT("io:%s:%s"), *Conn.Key, *Conn.Value);
-				Entity->Tags.Add(*Tag);
-			}
-		}
-	}
+	// Track for parentname resolution
+	Result.SpawnedEntities.Add(Entity);
 
 	Result.EntitiesImported++;
 	return true;

@@ -3,6 +3,10 @@
 #include "CoreMinimal.h"
 #include "VMF/VMFKeyValues.h"
 
+class ASourceEntityActor;
+class ASourceBrushEntity;
+class UProceduralMeshComponent;
+
 /** Per-face data parsed from a VMF side definition. */
 struct FVMFSideData
 {
@@ -21,6 +25,10 @@ struct FVMFSideData
 
 	/** Lightmap scale */
 	int32 LightmapScale = 16;
+
+	/** Raw UV axis strings for lossless re-export */
+	FString RawUAxisStr;
+	FString RawVAxisStr;
 };
 
 struct FVMFImportSettings
@@ -46,11 +54,16 @@ struct FVMFImportResult
 	int32 BrushesImported = 0;
 	int32 EntitiesImported = 0;
 	TArray<FString> Warnings;
+
+	/** All spawned entity actors (for post-import parentname resolution). */
+	TArray<TWeakObjectPtr<ASourceEntityActor>> SpawnedEntities;
 };
 
 /**
  * Imports a parsed VMF into the current UE level.
- * Creates ABrush actors for solids and spawns entities.
+ * Creates ABrush actors for worldspawn solids.
+ * Creates ASourceBrushEntity actors for brush entities with full keyvalue/I/O preservation.
+ * Creates typed ASourceEntityActor subclasses for point entities.
  */
 class SOURCEBRIDGE_API FVMFImporter
 {
@@ -97,7 +110,7 @@ private:
 	/** Create a large initial polygon on the given plane. */
 	static TArray<FVector> CreateLargePolygonOnPlane(const FPlane& Plane, const FVector& PointOnPlane);
 
-	/** Create an ABrush actor in the world from face polygons with per-face data. */
+	/** Create an ABrush actor in the world from face polygons with per-face data (worldspawn solids). */
 	static class ABrush* CreateBrushFromFaces(
 		UWorld* World,
 		const TArray<TArray<FVector>>& Faces,
@@ -106,11 +119,47 @@ private:
 		const TArray<int32>& FaceToSideMapping,
 		const FVMFImportSettings& Settings);
 
+	/**
+	 * Build a ProceduralMeshComponent from reconstructed faces and attach to an existing actor.
+	 * Used for both worldspawn brushes (on ABrush) and brush entity solids (on ASourceBrushEntity).
+	 * ActorCenter is the world-space center of the owning actor (for local-space vertex computation).
+	 */
+	static UProceduralMeshComponent* BuildProceduralMesh(
+		AActor* OwnerActor,
+		const FString& MeshName,
+		const TArray<TArray<FVector>>& Faces,
+		const TArray<FVector>& FaceNormals,
+		const TArray<FVMFSideData>& SideData,
+		const TArray<int32>& FaceToSideMapping,
+		const FVMFImportSettings& Settings,
+		const FVector& ActorCenter);
+
+	/**
+	 * Parse a VMF solid block into face/plane data without creating any actors.
+	 * Returns true if the solid has enough valid planes for geometry.
+	 */
+	static bool ParseSolid(const FVMFKeyValues& SolidBlock,
+		TArray<TArray<FVector>>& OutFaces,
+		TArray<FVector>& OutFaceNormals,
+		TArray<FVMFSideData>& OutSideData,
+		TArray<int32>& OutFaceToSideMapping,
+		FVMFImportResult& Result);
+
 	/** Import a worldspawn or entity solid block. Returns the created brush (or null). */
 	static class ABrush* ImportSolid(const FVMFKeyValues& SolidBlock, UWorld* World,
+		const FVMFImportSettings& Settings, FVMFImportResult& Result);
+
+	/** Import a brush entity (entity with solid children) as an ASourceBrushEntity. */
+	static ASourceBrushEntity* ImportBrushEntity(const FVMFKeyValues& EntityBlock, UWorld* World,
 		const FVMFImportSettings& Settings, FVMFImportResult& Result);
 
 	/** Import a point entity. */
 	static bool ImportPointEntity(const FVMFKeyValues& EntityBlock, UWorld* World,
 		const FVMFImportSettings& Settings, FVMFImportResult& Result);
+
+	/** Apply common entity properties (classname, targetname, parentname, keyvalues, spawnflags, I/O). */
+	static void ApplyEntityProperties(ASourceEntityActor* Entity, const FVMFKeyValues& EntityBlock);
+
+	/** Resolve parentname relationships after all entities are spawned. */
+	static void ResolveParentNames(const FVMFImportResult& Result);
 };
