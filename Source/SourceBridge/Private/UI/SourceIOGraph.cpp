@@ -554,9 +554,15 @@ void USourceIOGraph::AutoLayout()
 {
 	if (Nodes.Num() == 0) return;
 
-	// Build adjacency: for each node, which nodes does it connect TO (via outputs)
+	const float ColumnSpacing = 450.0f;
+	const float RowSpacing = 180.0f;
+	const int32 MaxRowsPerColumn = 12;
+
+	// Separate connected and disconnected nodes
+	// Build adjacency for connected subgraphs
 	TMap<USourceIOGraphNode*, TArray<USourceIOGraphNode*>> Outgoing;
 	TSet<USourceIOGraphNode*> HasIncoming;
+	TSet<USourceIOGraphNode*> HasAnyConnection;
 
 	for (UEdGraphNode* Node : Nodes)
 	{
@@ -565,28 +571,34 @@ void USourceIOGraph::AutoLayout()
 
 		for (UEdGraphPin* Pin : IONode->Pins)
 		{
-			if (!Pin || Pin->Direction != EGPD_Output) continue;
+			if (!Pin) continue;
 			for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
 			{
 				if (!LinkedPin) continue;
-				USourceIOGraphNode* TargetNode = Cast<USourceIOGraphNode>(LinkedPin->GetOwningNode());
-				if (TargetNode && TargetNode != IONode)
+				USourceIOGraphNode* OtherNode = Cast<USourceIOGraphNode>(LinkedPin->GetOwningNode());
+				if (OtherNode && OtherNode != IONode)
 				{
-					Outgoing.FindOrAdd(IONode).AddUnique(TargetNode);
-					HasIncoming.Add(TargetNode);
+					HasAnyConnection.Add(IONode);
+					HasAnyConnection.Add(OtherNode);
+
+					if (Pin->Direction == EGPD_Output)
+					{
+						Outgoing.FindOrAdd(IONode).AddUnique(OtherNode);
+						HasIncoming.Add(OtherNode);
+					}
 				}
 			}
 		}
 	}
 
-	// BFS from root nodes (no incoming connections)
+	// === Layout connected nodes using BFS columns ===
 	TMap<USourceIOGraphNode*, int32> NodeColumn;
 	TQueue<USourceIOGraphNode*> Queue;
 
-	for (UEdGraphNode* Node : Nodes)
+	// Root nodes: connected but no incoming edges
+	for (USourceIOGraphNode* IONode : HasAnyConnection)
 	{
-		USourceIOGraphNode* IONode = Cast<USourceIOGraphNode>(Node);
-		if (IONode && !HasIncoming.Contains(IONode))
+		if (!HasIncoming.Contains(IONode))
 		{
 			NodeColumn.Add(IONode, 0);
 			Queue.Enqueue(IONode);
@@ -620,38 +632,30 @@ void USourceIOGraph::AutoLayout()
 		}
 	}
 
-	// Assign disconnected nodes to column -1 (placed on the right)
-	int32 MaxColumn = 0;
-	for (const auto& Pair : NodeColumn)
+	// Any connected nodes that weren't reached (cycles) get column 0
+	for (USourceIOGraphNode* IONode : HasAnyConnection)
 	{
-		MaxColumn = FMath::Max(MaxColumn, Pair.Value);
-	}
-
-	for (UEdGraphNode* Node : Nodes)
-	{
-		USourceIOGraphNode* IONode = Cast<USourceIOGraphNode>(Node);
-		if (IONode && !NodeColumn.Contains(IONode))
+		if (!NodeColumn.Contains(IONode))
 		{
-			NodeColumn.Add(IONode, MaxColumn + 1);
+			NodeColumn.Add(IONode, 0);
 		}
 	}
 
-	// Group nodes by column
+	// Group connected nodes by column and position them
 	TMap<int32, TArray<USourceIOGraphNode*>> ColumnNodes;
 	for (const auto& Pair : NodeColumn)
 	{
 		ColumnNodes.FindOrAdd(Pair.Value).Add(Pair.Key);
 	}
 
-	// Position nodes
-	const float ColumnSpacing = 400.0f;
-	const float RowSpacing = 200.0f;
+	// Sort columns
+	TArray<int32> ColumnKeys;
+	ColumnNodes.GetKeys(ColumnKeys);
+	ColumnKeys.Sort();
 
-	for (const auto& ColPair : ColumnNodes)
+	for (int32 Col : ColumnKeys)
 	{
-		int32 Col = ColPair.Key;
-		const TArray<USourceIOGraphNode*>& NodesInCol = ColPair.Value;
-
+		TArray<USourceIOGraphNode*>& NodesInCol = ColumnNodes[Col];
 		float StartY = -(NodesInCol.Num() - 1) * RowSpacing * 0.5f;
 
 		for (int32 i = 0; i < NodesInCol.Num(); ++i)
@@ -659,6 +663,42 @@ void USourceIOGraph::AutoLayout()
 			NodesInCol[i]->NodePosX = Col * ColumnSpacing;
 			NodesInCol[i]->NodePosY = StartY + i * RowSpacing;
 		}
+	}
+
+	// === Layout disconnected nodes in a grid below the connected section ===
+	TArray<USourceIOGraphNode*> DisconnectedNodes;
+	for (UEdGraphNode* Node : Nodes)
+	{
+		USourceIOGraphNode* IONode = Cast<USourceIOGraphNode>(Node);
+		if (IONode && !HasAnyConnection.Contains(IONode))
+		{
+			DisconnectedNodes.Add(IONode);
+		}
+	}
+
+	if (DisconnectedNodes.Num() == 0) return;
+
+	// Sort disconnected nodes by classname for visual grouping
+	DisconnectedNodes.Sort([](const USourceIOGraphNode& A, const USourceIOGraphNode& B)
+	{
+		return A.CachedClassname < B.CachedClassname;
+	});
+
+	// Find the bottom of the connected layout
+	float ConnectedMaxY = 0;
+	for (const auto& Pair : NodeColumn)
+	{
+		ConnectedMaxY = FMath::Max(ConnectedMaxY, (float)Pair.Key->NodePosY);
+	}
+	float DisconnectedStartY = (NodeColumn.Num() > 0) ? ConnectedMaxY + RowSpacing * 3.0f : 0.0f;
+
+	// Place in a grid
+	for (int32 i = 0; i < DisconnectedNodes.Num(); ++i)
+	{
+		int32 Col = i / MaxRowsPerColumn;
+		int32 Row = i % MaxRowsPerColumn;
+		DisconnectedNodes[i]->NodePosX = Col * ColumnSpacing;
+		DisconnectedNodes[i]->NodePosY = DisconnectedStartY + Row * RowSpacing;
 	}
 }
 
