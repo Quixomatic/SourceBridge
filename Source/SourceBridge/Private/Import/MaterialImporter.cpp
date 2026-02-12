@@ -122,17 +122,24 @@ FVMTParsedMaterial FMaterialImporter::ParseVMT(const FString& VMTContent)
 			}
 			else if (*Ptr == '"' && Depth == 1)
 			{
-				// Key-value pair at top level
+				// Key-value pair at top level (quoted key)
 				FString Key = ReadQuoted();
 				SkipWS();
+				FString Value;
 				if (*Ptr == '"')
 				{
-					FString Value = ReadQuoted();
-					if (!Key.IsEmpty())
-					{
-						// Normalize key to lowercase
-						Result.Parameters.Add(Key.ToLower(), Value);
-					}
+					// Quoted value: "$key" "value"
+					Value = ReadQuoted();
+				}
+				else if (*Ptr && *Ptr != '{' && *Ptr != '}')
+				{
+					// Unquoted value: "$key" value (common in tool VMTs)
+					Value = ReadToken();
+				}
+				if (!Key.IsEmpty())
+				{
+					// Normalize key to lowercase
+					Result.Parameters.Add(Key.ToLower(), Value);
 				}
 			}
 			else if (*Ptr)
@@ -413,9 +420,7 @@ UMaterialInterface* FMaterialImporter::CreateMaterialFromVMT(const FString& Sour
 	}
 	SearchRoots.Append(AdditionalSearchPaths);
 
-	if (SearchRoots.Num() == 0) return nullptr;
-
-	// Search for VMT file across all paths
+	// Search for VMT file across all disk paths
 	FString VMTFullPath;
 	FString VMTRelPath = TEXT("materials") / SourceMaterialPath + TEXT(".vmt");
 
@@ -480,8 +485,13 @@ UMaterialInterface* FMaterialImporter::CreateMaterialFromVMT(const FString& Sour
 	}
 
 	FString VMTSource = VMTFullPath.IsEmpty() ? TEXT("VPK") : VMTFullPath;
-	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Parsed VMT '%s' (from %s) - shader: %s, basetexture: %s"),
-		*SourceMaterialPath, *VMTSource, *VMTData.ShaderName, *VMTData.GetBaseTexture());
+	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Parsed VMT '%s' (from %s) - shader: %s, basetexture: %s, params=%d"),
+		*SourceMaterialPath, *VMTSource, *VMTData.ShaderName, *VMTData.GetBaseTexture(), VMTData.Parameters.Num());
+	// Log all VMT parameters for debugging transparency issues
+	for (const auto& Pair : VMTData.Parameters)
+	{
+		UE_LOG(LogTemp, Log, TEXT("MaterialImporter:   VMT param: '%s' = '%s'"), *Pair.Key, *Pair.Value);
+	}
 
 	// Determine alpha mode from VMT shader parameters
 	// $translucent = smooth partial opacity (BLEND_Translucent)
