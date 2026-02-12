@@ -21,6 +21,7 @@
 #include "Components/BrushComponent.h"
 #include "BSPOps.h"
 #include "EngineUtils.h"
+#include "Misc/ScopedSlowTask.h"
 #include "ProceduralMeshComponent.h"
 
 FVMFImportResult FVMFImporter::ImportFile(const FString& FilePath, UWorld* World,
@@ -59,8 +60,33 @@ FVMFImportResult FVMFImporter::ImportBlocks(const TArray<FVMFKeyValues>& Blocks,
 		FMaterialImporter::SetAssetSearchPath(Settings.AssetSearchPath);
 	}
 
+	// Count total work items for progress bar
+	int32 TotalItems = 0;
 	for (const FVMFKeyValues& Block : Blocks)
 	{
+		if (Block.ClassName.Equals(TEXT("world"), ESearchCase::IgnoreCase) && Settings.bImportBrushes)
+		{
+			for (const FVMFKeyValues& Child : Block.Children)
+			{
+				if (Child.ClassName.Equals(TEXT("solid"), ESearchCase::IgnoreCase))
+					TotalItems++;
+			}
+		}
+		else if (Block.ClassName.Equals(TEXT("entity"), ESearchCase::IgnoreCase) && Settings.bImportEntities)
+		{
+			TotalItems++;
+		}
+	}
+
+	FScopedSlowTask SlowTask((float)TotalItems, FText::FromString(
+		FString::Printf(TEXT("Importing %d items..."), TotalItems)));
+	SlowTask.MakeDialog(true);
+
+	for (const FVMFKeyValues& Block : Blocks)
+	{
+		if (SlowTask.ShouldCancel())
+			break;
+
 		if (Block.ClassName.Equals(TEXT("world"), ESearchCase::IgnoreCase))
 		{
 			// Import worldspawn solids
@@ -68,8 +94,13 @@ FVMFImportResult FVMFImporter::ImportBlocks(const TArray<FVMFKeyValues>& Blocks,
 			{
 				for (const FVMFKeyValues& Child : Block.Children)
 				{
+					if (SlowTask.ShouldCancel())
+						break;
+
 					if (Child.ClassName.Equals(TEXT("solid"), ESearchCase::IgnoreCase))
 					{
+						SlowTask.EnterProgressFrame(1.0f, FText::FromString(
+							FString::Printf(TEXT("Brush %d/%d"), Result.BrushesImported + 1, TotalItems)));
 						ImportSolid(Child, World, Settings, Result);
 					}
 				}
@@ -78,6 +109,9 @@ FVMFImportResult FVMFImporter::ImportBlocks(const TArray<FVMFKeyValues>& Blocks,
 		else if (Block.ClassName.Equals(TEXT("entity"), ESearchCase::IgnoreCase))
 		{
 			if (!Settings.bImportEntities) continue;
+
+			SlowTask.EnterProgressFrame(1.0f, FText::FromString(
+				FString::Printf(TEXT("Entity %d/%d"), Result.EntitiesImported + 1, TotalItems)));
 
 			// Check if brush entity (has solid children) or point entity
 			bool bHasSolids = false;

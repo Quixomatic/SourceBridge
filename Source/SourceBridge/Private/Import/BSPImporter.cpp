@@ -5,6 +5,7 @@
 #include "Import/VTFReader.h"
 #include "UI/SourceBridgeSettings.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopedSlowTask.h"
 #include "HAL/PlatformProcess.h"
 #include "HAL/PlatformFileManager.h"
 
@@ -19,8 +20,12 @@ FVMFImportResult FBSPImporter::ImportFile(const FString& BSPPath, UWorld* World,
 		return Result;
 	}
 
-	// Output to Saved/SourceBridge/Import/<mapname>/ (absolute path for external tools)
 	FString MapName = FPaths::GetBaseFilename(BSPPath);
+
+	FScopedSlowTask SlowTask(4.0f, FText::FromString(FString::Printf(TEXT("Importing %s..."), *MapName)));
+	SlowTask.MakeDialog(true);
+
+	// Output to Saved/SourceBridge/Import/<mapname>/ (absolute path for external tools)
 	FString OutputDir = FPaths::ConvertRelativePathToFull(
 		FPaths::ProjectSavedDir() / TEXT("SourceBridge") / TEXT("Import") / MapName);
 
@@ -30,7 +35,9 @@ FVMFImportResult FBSPImporter::ImportFile(const FString& BSPPath, UWorld* World,
 
 	UE_LOG(LogTemp, Log, TEXT("BSPImporter: Import directory: %s"), *OutputDir);
 
-	// Decompile BSP → VMF + extract embedded assets
+	// Step 1: Decompile BSP → VMF + extract embedded assets
+	SlowTask.EnterProgressFrame(1.0f, FText::FromString(TEXT("Decompiling BSP...")));
+
 	FString DecompileError;
 	FString VMFPath = DecompileBSP(BSPPath, OutputDir, DecompileError);
 
@@ -41,6 +48,9 @@ FVMFImportResult FBSPImporter::ImportFile(const FString& BSPPath, UWorld* World,
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("BSPImporter: Decompiled '%s' → '%s'"), *BSPPath, *VMFPath);
+
+	// Step 2: Set up search paths
+	SlowTask.EnterProgressFrame(1.0f, FText::FromString(TEXT("Setting up search paths...")));
 
 	// BSPSource --unpack_embedded extracts files into a nested subdirectory:
 	//   <OutputDir>/<mapname>/materials/  (not <OutputDir>/materials/)
@@ -79,16 +89,16 @@ FVMFImportResult FBSPImporter::ImportFile(const FString& BSPPath, UWorld* World,
 	FModelImporter::SetAssetSearchPath(AssetSearchDir);
 	FModelImporter::SetupGameSearchPaths(TargetGame);
 
-	// Enable debug texture dump to save all VTFs as PNGs
-	FVTFReader::bDebugDumpTextures = true;
+	// Debug texture dump is OFF by default — enable via: FVTFReader::bDebugDumpTextures = true
+	// (Set it in the console or code before import if you need to inspect textures)
 	FVTFReader::DebugDumpPath = OutputDir / TEXT("Debug_Textures");
 
-	// Import the decompiled VMF with asset search path
+	// Step 3: Import the decompiled VMF
+	SlowTask.EnterProgressFrame(2.0f, FText::FromString(TEXT("Importing VMF...")));
+
 	FVMFImportSettings ImportSettings = Settings;
 	ImportSettings.AssetSearchPath = AssetSearchDir;
 	Result = FVMFImporter::ImportFile(VMFPath, World, ImportSettings);
-
-	FVTFReader::bDebugDumpTextures = false;
 
 	return Result;
 }

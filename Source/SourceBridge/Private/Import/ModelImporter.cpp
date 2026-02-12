@@ -113,13 +113,18 @@ bool FModelImporter::ReadFileFromDisk(const FString& RelativePath, TArray<uint8>
 	FString NormPath = RelativePath;
 	NormPath.ReplaceInline(TEXT("/"), TEXT("\\"));
 
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+
 	// Try asset search path first (BSP extracted)
 	if (!AssetSearchPath.IsEmpty())
 	{
 		FString FullPath = AssetSearchPath / NormPath;
-		if (FFileHelper::LoadFileToArray(OutData, *FullPath))
+		if (PlatformFile.FileExists(*FullPath))
 		{
-			return true;
+			if (FFileHelper::LoadFileToArray(OutData, *FullPath))
+			{
+				return true;
+			}
 		}
 	}
 
@@ -127,9 +132,12 @@ bool FModelImporter::ReadFileFromDisk(const FString& RelativePath, TArray<uint8>
 	for (const FString& SearchPath : AdditionalSearchPaths)
 	{
 		FString FullPath = SearchPath / NormPath;
-		if (FFileHelper::LoadFileToArray(OutData, *FullPath))
+		if (PlatformFile.FileExists(*FullPath))
 		{
-			return true;
+			if (FFileHelper::LoadFileToArray(OutData, *FullPath))
+			{
+				return true;
+			}
 		}
 	}
 
@@ -231,7 +239,7 @@ bool FModelImporter::FindModelFiles(const FString& SourceModelPath,
 		bFoundPHY = ReadFileFromVPK(PHYPath, OutPHY);
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("ModelImporter: Found model files: %s (MDL=%d, VVD=%d, VTX=%d, PHY=%d bytes)"),
+	UE_LOG(LogTemp, Verbose, TEXT("ModelImporter: Found model files: %s (MDL=%d, VVD=%d, VTX=%d, PHY=%d bytes)"),
 		*SourceModelPath, OutMDL.Num(), OutVVD.Num(), OutVTX.Num(), OutPHY.Num());
 
 	return true;

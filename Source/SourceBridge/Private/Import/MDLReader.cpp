@@ -266,7 +266,7 @@ bool FMDLReader::ParseMDLHeader(const uint8* Data, int32 DataSize, FSourceModelD
 
 	OutModel.RootLOD = Data[MDLOffsets::RootLOD];
 
-	UE_LOG(LogTemp, Log, TEXT("MDLReader: '%s' v%d checksum=%d flags=0x%X bones=%d textures=%d bodyparts=%d mass=%.1f %s"),
+	UE_LOG(LogTemp, Verbose, TEXT("MDLReader: '%s' v%d checksum=%d flags=0x%X bones=%d textures=%d bodyparts=%d mass=%.1f %s"),
 		*OutModel.Name, OutModel.Version, OutModel.Checksum, OutModel.Flags,
 		ReadValue<int32>(Data, MDLOffsets::BoneCount),
 		ReadValue<int32>(Data, MDLOffsets::TextureCount),
@@ -367,7 +367,7 @@ bool FMDLReader::ParseMDLSkinTable(const uint8* Data, int32 DataSize, FSourceMod
 		OutModel.SkinFamilies.Add(MoveTemp(FamilyRefs));
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("MDLReader: Skin table: %d families × %d references"), SkinFamilyCount, SkinRefCount);
+	UE_LOG(LogTemp, Verbose, TEXT("MDLReader: Skin table: %d families × %d references"), SkinFamilyCount, SkinRefCount);
 	return true;
 }
 
@@ -416,7 +416,7 @@ bool FMDLReader::ParseMDLBones(const uint8* Data, int32 DataSize, FSourceModelDa
 		OutModel.Bones.Add(MoveTemp(Bone));
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("MDLReader: Parsed %d bones"), OutModel.Bones.Num());
+	UE_LOG(LogTemp, Verbose, TEXT("MDLReader: Parsed %d bones"), OutModel.Bones.Num());
 	return true;
 }
 
@@ -789,7 +789,7 @@ bool FMDLReader::ParsePHY(const TArray<uint8>& PHYData, FSourceModelData& OutMod
 		UE_LOG(LogTemp, Warning, TEXT("MDLReader: PHY checksum mismatch (PHY=%d, MDL=%d)"), Checksum, OutModel.Checksum);
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("MDLReader: PHY header: size=%d id=%d solids=%d checksum=%d"),
+	UE_LOG(LogTemp, Verbose, TEXT("MDLReader: PHY header: size=%d id=%d solids=%d checksum=%d"),
 		HeaderSize, ID, SolidCount, Checksum);
 
 	// Store raw PHY data for round-trip preservation
@@ -839,7 +839,7 @@ bool FMDLReader::ParsePHY(const TArray<uint8>& PHYData, FSourceModelData& OutMod
 		}
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("MDLReader: Parsed PHY: %d solids"), OutModel.PhySolids.Num());
+	UE_LOG(LogTemp, Verbose, TEXT("MDLReader: Parsed PHY: %d solids"), OutModel.PhySolids.Num());
 	return true;
 }
 
@@ -952,7 +952,7 @@ bool FMDLReader::ParseVVD(const uint8* Data, int32 DataSize, int32 ExpectedCheck
 	int32 EffectiveLOD = FMath::Clamp(RequestedLOD, 0, NumLODs - 1);
 	int32 TotalVertices = LODVertexCounts[EffectiveLOD];
 
-	UE_LOG(LogTemp, Log, TEXT("MDLReader: VVD v%d checksum=%d LODs=%d vertices[LOD%d]=%d fixups=%d"),
+	UE_LOG(LogTemp, Verbose, TEXT("MDLReader: VVD v%d checksum=%d LODs=%d vertices[LOD%d]=%d fixups=%d"),
 		Version, Checksum, NumLODs, EffectiveLOD, TotalVertices, NumFixups);
 
 	// Read vertices
@@ -1055,7 +1055,7 @@ bool FMDLReader::ParseVVD(const uint8* Data, int32 DataSize, int32 ExpectedCheck
 		}
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("MDLReader: Loaded %d vertices from VVD"), OutModel.Vertices.Num());
+	UE_LOG(LogTemp, Verbose, TEXT("MDLReader: Loaded %d vertices from VVD"), OutModel.Vertices.Num());
 	return true;
 }
 
@@ -1285,7 +1285,7 @@ bool FMDLReader::ParseVTX(const uint8* Data, int32 DataSize, int32 MDLVersion, i
 		}
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("MDLReader: Extracted %d triangles across %d meshes from VTX"), TotalTriangles, OutModel.Meshes.Num());
+	UE_LOG(LogTemp, Verbose, TEXT("MDLReader: Extracted %d triangles across %d meshes from VTX"), TotalTriangles, OutModel.Meshes.Num());
 	return true;
 }
 
@@ -1388,6 +1388,6 @@ FSourceModelData FMDLReader::ReadModelAllLODs(
 		}
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("MDLReader: Parsed %d LOD levels for '%s'"), Model.LODs.Num(), *Model.Name);
+	UE_LOG(LogTemp, Verbose, TEXT("MDLReader: Parsed %d LOD levels for '%s'"), Model.LODs.Num(), *Model.Name);
 	return Model;
 }
