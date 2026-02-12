@@ -4,7 +4,31 @@
 // MDL/VVD/VTX Binary Format Offsets (from Valve SDK studio.h / optimize.h)
 // ============================================================================
 
-// MDL studiohdr_t field offsets
+// MDL studiohdr_t field offsets (verified against Valve SDK studio.h)
+// Full field-by-field accounting of the 408-byte header:
+//   0: id(4) 4: version(4) 8: checksum(4) 12: name[64] 76: dataLength(4)
+//   80: eyeposition(12) 92: illumposition(12) 104: hull_min(12) 116: hull_max(12)
+//   128: view_bbmin(12) 140: view_bbmax(12) 152: flags(4)
+//   156: bone_count(4) 160: bone_offset(4) 164: bonecontroller_count(4) 168: bonecontroller_offset(4)
+//   172: hitbox_count(4) 176: hitbox_offset(4) 180: localanim_count(4) 184: localanim_offset(4)
+//   188: localseq_count(4) 192: localseq_offset(4) 196: activitylistversion(4) 200: eventsindexed(4)
+//   204: texture_count(4) 208: texture_offset(4) 212: texturedir_count(4) 216: texturedir_offset(4)
+//   220: skinreference_count(4) 224: skinrfamily_count(4) 228: skinreference_index(4)
+//   232: bodypart_count(4) 236: bodypart_offset(4)
+//   240: attachment_count(4) 244: attachment_offset(4)
+//   248: localnode_count(4) 252: localnode_index(4) 256: localnode_name_index(4)
+//   260: flexdesc_count(4) 264: flexdesc_index(4) 268: flexcontroller_count(4) 272: flexcontroller_index(4)
+//   276: flexrules_count(4) 280: flexrules_index(4) 284: ikchain_count(4) 288: ikchain_index(4)
+//   292: mouths_count(4) 296: mouths_index(4) 300: localposeparam_count(4) 304: localposeparam_index(4)
+//   308: surfaceprop_index(4) 312: keyvalue_index(4) 316: keyvalue_count(4)
+//   320: iklock_count(4) 324: iklock_index(4) 328: mass(4) 332: contents(4)
+//   336: includemodel_count(4) 340: includemodel_index(4) 344: virtualModel(4)
+//   348: animblocks_name_index(4) 352: animblocks_count(4) 356: animblocks_index(4) 360: animblockModel(4)
+//   364: bonetablename_index(4) 368: vertex_base(4) 372: offset_base(4)
+//   376: directionaldotproduct(1) 377: rootLod(1) 378: numAllowedRootLods(1) 379: unused0(1)
+//   380: unused1(4) 384: flexcontrollerui_count(4) 388: flexcontrollerui_index(4)
+//   392: vertAnimFixedPointScale(4) 396: unused2(4) 400: studiohdr2index(4) 404: unused3(4)
+//   = 408 total
 namespace MDLOffsets
 {
 	constexpr int32 ID = 0;
@@ -32,21 +56,22 @@ namespace MDLOffsets
 	constexpr int32 LocalAnimOffset = 184;
 	constexpr int32 LocalSeqCount = 188;
 	constexpr int32 LocalSeqOffset = 192;
+	// 196: activitylistversion(4), 200: eventsindexed(4) - not directly used
 
-	constexpr int32 TextureCount = 200;
-	constexpr int32 TextureOffset = 204;
-	constexpr int32 TextureDirCount = 208;
-	constexpr int32 TextureDirOffset = 212;
+	constexpr int32 TextureCount = 204;
+	constexpr int32 TextureOffset = 208;
+	constexpr int32 TextureDirCount = 212;
+	constexpr int32 TextureDirOffset = 216;
 
-	constexpr int32 SkinRefCount = 216;
-	constexpr int32 SkinFamilyCount = 220;
-	constexpr int32 SkinRefIndex = 224;
+	constexpr int32 SkinRefCount = 220;
+	constexpr int32 SkinFamilyCount = 224;
+	constexpr int32 SkinRefIndex = 228;
 
-	constexpr int32 BodyPartCount = 228;
-	constexpr int32 BodyPartOffset = 232;
+	constexpr int32 BodyPartCount = 232;
+	constexpr int32 BodyPartOffset = 236;
 
-	constexpr int32 AttachmentCount = 236;
-	constexpr int32 AttachmentOffset = 240;
+	constexpr int32 AttachmentCount = 240;
+	constexpr int32 AttachmentOffset = 244;
 
 	constexpr int32 SurfacePropIndex = 308;
 
@@ -56,8 +81,8 @@ namespace MDLOffsets
 	constexpr int32 Mass = 328;
 	constexpr int32 Contents = 332;
 
-	constexpr int32 RootLOD = 393;       // byte
-	constexpr int32 NumAllowedRootLODs = 394; // byte
+	constexpr int32 RootLOD = 377;       // byte
+	constexpr int32 NumAllowedRootLODs = 378; // byte
 
 	constexpr int32 HeaderSize = 408;
 }
