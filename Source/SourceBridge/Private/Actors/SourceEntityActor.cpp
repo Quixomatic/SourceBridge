@@ -115,6 +115,21 @@ ASourceLight::ASourceLight()
 ASourceProp::ASourceProp()
 {
 	SourceClassname = TEXT("prop_static");
+
+	MeshComponent = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ModelMesh"));
+	if (MeshComponent)
+	{
+		MeshComponent->SetupAttachment(RootComponent);
+		MeshComponent->SetMobility(EComponentMobility::Movable);
+	}
+}
+
+void ASourceProp::SetStaticMesh(UStaticMesh* Mesh)
+{
+	if (MeshComponent && Mesh)
+	{
+		MeshComponent->SetStaticMesh(Mesh);
+	}
 }
 
 // ---- Func Brush ----

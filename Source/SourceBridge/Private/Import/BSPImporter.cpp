@@ -1,6 +1,7 @@
 #include "Import/BSPImporter.h"
 #include "Import/VMFImporter.h"
 #include "Import/MaterialImporter.h"
+#include "Import/ModelImporter.h"
 #include "Import/VTFReader.h"
 #include "UI/SourceBridgeSettings.h"
 #include "Misc/Paths.h"
@@ -73,6 +74,10 @@ FVMFImportResult FBSPImporter::ImportFile(const FString& BSPPath, UWorld* World,
 	// This finds materials in cstrike/materials/, cstrike/custom/*/materials/, etc.
 	FString TargetGame = USourceBridgeSettings::Get()->TargetGame;
 	FMaterialImporter::SetupGameSearchPaths(TargetGame);
+
+	// Initialize model importer with same search paths
+	FModelImporter::SetAssetSearchPath(AssetSearchDir);
+	FModelImporter::SetupGameSearchPaths(TargetGame);
 
 	// Enable debug texture dump to save all VTFs as PNGs
 	FVTFReader::bDebugDumpTextures = true;
@@ -202,9 +207,11 @@ FString FBSPImporter::DecompileBSP(const FString& BSPPath, const FString& Output
 	IFileManager::Get().FindFilesRecursive(ExtractedVMTs, *OutputDir, TEXT("*.vmt"), true, false);
 	TArray<FString> ExtractedVTFs;
 	IFileManager::Get().FindFilesRecursive(ExtractedVTFs, *OutputDir, TEXT("*.vtf"), true, false);
+	TArray<FString> ExtractedMDLs;
+	IFileManager::Get().FindFilesRecursive(ExtractedMDLs, *OutputDir, TEXT("*.mdl"), true, false);
 
-	UE_LOG(LogTemp, Log, TEXT("BSPImporter: Extracted %d VMT files, %d VTF files to %s"),
-		ExtractedVMTs.Num(), ExtractedVTFs.Num(), *OutputDir);
+	UE_LOG(LogTemp, Log, TEXT("BSPImporter: Extracted %d VMT, %d VTF, %d MDL files to %s"),
+		ExtractedVMTs.Num(), ExtractedVTFs.Num(), ExtractedMDLs.Num(), *OutputDir);
 
 	return VMFPath;
 }

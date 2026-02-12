@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Actor.h"
+#include "Components/StaticMeshComponent.h"
 #include "SourceEntityActor.generated.h"
 
 /**
@@ -135,6 +136,17 @@ public:
 	/** Collision type (0 = not solid, 2 = BSP, 6 = VPhysics). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Source Prop")
 	int32 Solid = 6;
+
+	/** Model scale (from "modelscale" keyvalue). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Source Prop")
+	float ModelScale = 1.0f;
+
+	/** Static mesh component for displaying imported model geometry. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Source Prop")
+	TObjectPtr<UStaticMeshComponent> MeshComponent;
+
+	/** Set the static mesh on this prop (called by ModelImporter). */
+	void SetStaticMesh(UStaticMesh* Mesh);
 };
 
 /**

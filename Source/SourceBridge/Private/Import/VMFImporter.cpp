@@ -1,6 +1,7 @@
 #include "Import/VMFImporter.h"
 #include "Import/VMFReader.h"
 #include "Import/MaterialImporter.h"
+#include "Import/ModelImporter.h"
 #include "Actors/SourceEntityActor.h"
 #include "Entities/EntityIOConnection.h"
 #include "Engine/Brush.h"
@@ -47,8 +48,9 @@ FVMFImportResult FVMFImporter::ImportBlocks(const TArray<FVMFKeyValues>& Blocks,
 		return Result;
 	}
 
-	// Clear material cache for fresh import
+	// Clear caches for fresh import
 	FMaterialImporter::ClearCache();
+	FModelImporter::ClearCache();
 
 	// Set asset search path if provided (e.g., from BSP import with extracted assets)
 	if (!Settings.AssetSearchPath.IsEmpty())
@@ -841,6 +843,9 @@ bool FVMFImporter::ImportPointEntity(const FVMFKeyValues& EntityBlock, UWorld* W
 		{
 			// Override the default classname from constructor with the actual one
 			Prop->SourceClassname = ClassName;
+			float PropModelScale = 1.0f;
+			bool bDisableShadows = false;
+
 			for (const auto& KV : KeyValues)
 			{
 				if (KV.Key.Equals(TEXT("model"), ESearchCase::IgnoreCase))
@@ -849,6 +854,34 @@ bool FVMFImporter::ImportPointEntity(const FVMFKeyValues& EntityBlock, UWorld* W
 					Prop->Skin = FCString::Atoi(*KV.Value);
 				else if (KV.Key.Equals(TEXT("solid"), ESearchCase::IgnoreCase))
 					Prop->Solid = FCString::Atoi(*KV.Value);
+				else if (KV.Key.Equals(TEXT("modelscale"), ESearchCase::IgnoreCase))
+					PropModelScale = FCString::Atof(*KV.Value);
+				else if (KV.Key.Equals(TEXT("disableshadows"), ESearchCase::IgnoreCase))
+					bDisableShadows = FCString::Atoi(*KV.Value) != 0;
+			}
+
+			Prop->ModelScale = PropModelScale;
+
+			// Try to resolve model geometry
+			if (!Prop->ModelPath.IsEmpty())
+			{
+				UStaticMesh* ModelMesh = FModelImporter::ResolveModel(Prop->ModelPath, Prop->Skin);
+				if (ModelMesh)
+				{
+					Prop->SetStaticMesh(ModelMesh);
+
+					// Apply model scale
+					if (!FMath::IsNearlyEqual(PropModelScale, 1.0f, 0.001f))
+					{
+						Prop->SetActorScale3D(FVector(PropModelScale));
+					}
+
+					// Apply shadow settings
+					if (bDisableShadows && Prop->MeshComponent)
+					{
+						Prop->MeshComponent->SetCastShadow(false);
+					}
+				}
 			}
 		}
 		Entity = Prop;
