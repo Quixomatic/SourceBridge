@@ -406,8 +406,9 @@ TSharedRef<SWidget> SSourceIOGraphNode::CreateConnectionRowWidget(
 			.ColorAndOpacity(FSlateColor(FLinearColor::Red));
 	}
 
-	FString Summary = FString::Printf(TEXT("%s -> %s.%s"),
-		*Conn.OutputName, *Conn.TargetEntity, *Conn.InputName);
+	FString Summary = Conn.Parameter.IsEmpty()
+		? FString::Printf(TEXT("%s -> %s.%s"), *Conn.OutputName, *Conn.TargetEntity, *Conn.InputName)
+		: FString::Printf(TEXT("%s -> %s.%s (%s)"), *Conn.OutputName, *Conn.TargetEntity, *Conn.InputName, *Conn.Parameter);
 
 	// Capture values for editing
 	FString OutputName = Conn.OutputName;
@@ -464,12 +465,46 @@ TSharedRef<SWidget> SSourceIOGraphNode::CreateConnectionRowWidget(
 			]
 		]
 
-		// Detail line: delay, refire (editable)
+		// Detail line: param, delay, refire (editable)
 		+ SVerticalBox::Slot()
 		.AutoHeight()
 		.Padding(8, 0, 0, 2)
 		[
 			SNew(SHorizontalBox)
+
+			// Parameter
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.VAlign(VAlign_Center)
+			.Padding(0, 0, 2, 0)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("ParamLabel", "param:"))
+				.Font(GetNodeBodyFont())
+				.ColorAndOpacity(FSlateColor(FLinearColor(0.5f, 0.5f, 0.5f)))
+			]
+			+ SHorizontalBox::Slot()
+			.AutoWidth()
+			.Padding(0, 0, 6, 0)
+			[
+				SNew(SEditableTextBox)
+				.Font(GetNodeBodyFont())
+				.MinDesiredWidth(60.0f)
+				.Text(FText::FromString(Parameter))
+				.OnTextCommitted_Lambda([WeakActor, TagIndex, OutputName, TargetEntity, InputName, Delay, Refire](
+					const FText& NewText, ETextCommit::Type)
+				{
+					if (ASourceEntityActor* A = WeakActor.Get())
+					{
+						if (!A->Tags.IsValidIndex(TagIndex)) return;
+						FString NewParam = NewText.ToString().TrimStartAndEnd();
+						FString NewTag = FString::Printf(TEXT("io:%s:%s,%s,%s,%g,%d"),
+							*OutputName, *TargetEntity, *InputName, *NewParam, Delay, Refire);
+						A->Modify();
+						A->Tags[TagIndex] = FName(*NewTag);
+					}
+				})
+			]
 
 			// Delay
 			+ SHorizontalBox::Slot()
