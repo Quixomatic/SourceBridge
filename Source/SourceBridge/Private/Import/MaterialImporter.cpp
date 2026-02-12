@@ -22,6 +22,7 @@ TArray<FString> FMaterialImporter::AdditionalSearchPaths;
 TArray<TSharedPtr<FVPKReader>> FMaterialImporter::VPKArchives;
 UMaterial* FMaterialImporter::TextureBaseMaterial = nullptr;
 UMaterial* FMaterialImporter::MaskedBaseMaterial = nullptr;
+UMaterial* FMaterialImporter::TranslucentBaseMaterial = nullptr;
 UMaterial* FMaterialImporter::ColorBaseMaterial = nullptr;
 
 // ---- VMT Parsing ----
@@ -482,10 +483,19 @@ UMaterialInterface* FMaterialImporter::CreateMaterialFromVMT(const FString& Sour
 	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Parsed VMT '%s' (from %s) - shader: %s, basetexture: %s"),
 		*SourceMaterialPath, *VMTSource, *VMTData.ShaderName, *VMTData.GetBaseTexture());
 
-	// Determine if material needs alpha from VMT params
-	bool bNeedsAlpha = VMTData.IsTranslucent()
-		|| VMTData.Parameters.Contains(TEXT("$alphatest"))
-		|| VMTData.Parameters.Contains(TEXT("$nocull"));
+	// Determine alpha mode from VMT shader parameters
+	// $translucent = smooth partial opacity (BLEND_Translucent)
+	// $alphatest   = binary alpha test (BLEND_Masked)
+	// $nocull alone doesn't imply alpha - just two-sided rendering
+	ESourceAlphaMode AlphaMode = ESourceAlphaMode::Opaque;
+	if (VMTData.IsTranslucent())
+	{
+		AlphaMode = ESourceAlphaMode::Translucent;
+	}
+	else if (VMTData.Parameters.Contains(TEXT("$alphatest")))
+	{
+		AlphaMode = ESourceAlphaMode::Masked;
+	}
 
 	// Try to load the $basetexture as a VTF file
 	FString BaseTexturePath = VMTData.GetBaseTexture();
@@ -497,26 +507,33 @@ UMaterialInterface* FMaterialImporter::CreateMaterialFromVMT(const FString& Sour
 			int32 TexW = Texture->GetSizeX();
 			int32 TexH = Texture->GetSizeY();
 
-			// Check if the texture format has alpha (DXT5, DXT3, BGRA, RGBA, ABGR)
-			EPixelFormat PixFmt = Texture->GetPixelFormat();
-			bool bTextureHasAlpha = (PixFmt == PF_DXT5 || PixFmt == PF_DXT3
-				|| PixFmt == PF_B8G8R8A8 || PixFmt == PF_R8G8B8A8);
-
-			if (bTextureHasAlpha)
+			// Only use texture format for alpha detection if VMT didn't already specify
+			// (many DXT5 textures use alpha for specular/gloss, not transparency)
+			if (AlphaMode == ESourceAlphaMode::Opaque)
 			{
-				bNeedsAlpha = true;
+				EPixelFormat PixFmt = Texture->GetPixelFormat();
+				bool bTextureHasAlpha = (PixFmt == PF_DXT5 || PixFmt == PF_DXT3
+					|| PixFmt == PF_B8G8R8A8 || PixFmt == PF_R8G8B8A8);
+				if (bTextureHasAlpha && VMTData.Parameters.Contains(TEXT("$nocull")))
+				{
+					// $nocull + alpha-capable format is a strong hint for masked rendering
+					// (e.g., foliage, fences)
+					AlphaMode = ESourceAlphaMode::Masked;
+				}
 			}
 
-			UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Loaded VTF texture '%s' (%dx%d, alpha=%s)"),
-				*BaseTexturePath, TexW, TexH, bNeedsAlpha ? TEXT("yes") : TEXT("no"));
+			const TCHAR* AlphaModeStr = AlphaMode == ESourceAlphaMode::Translucent ? TEXT("translucent")
+				: AlphaMode == ESourceAlphaMode::Masked ? TEXT("masked") : TEXT("opaque");
+			UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Loaded VTF texture '%s' (%dx%d, mode=%s)"),
+				*BaseTexturePath, TexW, TexH, AlphaModeStr);
 
 			// Cache texture info for UV normalization during import
 			FTextureCacheEntry Entry;
 			Entry.Size = FIntPoint(TexW, TexH);
-			Entry.bHasAlpha = bNeedsAlpha;
+			Entry.bHasAlpha = (AlphaMode != ESourceAlphaMode::Opaque);
 			TextureInfoCache.Add(SourceMaterialPath.ToUpper(), Entry);
 
-			return CreateTexturedMID(Texture, SourceMaterialPath, bNeedsAlpha);
+			return CreateTexturedMID(Texture, SourceMaterialPath, AlphaMode);
 		}
 	}
 
@@ -707,6 +724,37 @@ UMaterial* FMaterialImporter::GetOrCreateMaskedBaseMaterial()
 	return MaskedBaseMaterial;
 }
 
+UMaterial* FMaterialImporter::GetOrCreateTranslucentBaseMaterial()
+{
+	if (TranslucentBaseMaterial && TranslucentBaseMaterial->IsValidLowLevel())
+	{
+		return TranslucentBaseMaterial;
+	}
+
+	TranslucentBaseMaterial = NewObject<UMaterial>(GetTransientPackage(),
+		FName(TEXT("M_SourceBridge_TranslucentBase")), RF_Transient);
+
+	// Set blend mode to Translucent for smooth partial opacity
+	TranslucentBaseMaterial->BlendMode = BLEND_Translucent;
+	TranslucentBaseMaterial->TwoSided = true;
+
+	UMaterialExpressionTextureSampleParameter2D* TexParam =
+		NewObject<UMaterialExpressionTextureSampleParameter2D>(TranslucentBaseMaterial);
+	TexParam->ParameterName = FName(TEXT("BaseTexture"));
+	TexParam->SamplerType = SAMPLERTYPE_Color;
+	TranslucentBaseMaterial->GetExpressionCollection().AddExpression(TexParam);
+
+	// Connect RGB to BaseColor, Alpha to Opacity (not OpacityMask — smooth blending)
+	TranslucentBaseMaterial->GetEditorOnlyData()->BaseColor.Connect(0, TexParam);
+	TranslucentBaseMaterial->GetEditorOnlyData()->Opacity.Connect(4, TexParam); // Output 4 = Alpha
+
+	TranslucentBaseMaterial->PreEditChange(nullptr);
+	TranslucentBaseMaterial->PostEditChange();
+
+	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Created shared translucent base material"));
+	return TranslucentBaseMaterial;
+}
+
 UMaterial* FMaterialImporter::GetOrCreateColorBaseMaterial()
 {
 	if (ColorBaseMaterial && ColorBaseMaterial->IsValidLowLevel())
@@ -731,13 +779,28 @@ UMaterial* FMaterialImporter::GetOrCreateColorBaseMaterial()
 	return ColorBaseMaterial;
 }
 
-UMaterialInstanceDynamic* FMaterialImporter::CreateTexturedMID(UTexture2D* Texture, const FString& SourceMaterialPath, bool bNeedsAlpha)
+UMaterialInstanceDynamic* FMaterialImporter::CreateTexturedMID(UTexture2D* Texture, const FString& SourceMaterialPath, ESourceAlphaMode AlphaMode)
 {
-	UMaterial* BaseMat = bNeedsAlpha ? GetOrCreateMaskedBaseMaterial() : GetOrCreateTextureBaseMaterial();
+	UMaterial* BaseMat = nullptr;
+	FString Prefix;
+	switch (AlphaMode)
+	{
+	case ESourceAlphaMode::Translucent:
+		BaseMat = GetOrCreateTranslucentBaseMaterial();
+		Prefix = TEXT("MID_Translucent_");
+		break;
+	case ESourceAlphaMode::Masked:
+		BaseMat = GetOrCreateMaskedBaseMaterial();
+		Prefix = TEXT("MID_Masked_");
+		break;
+	default:
+		BaseMat = GetOrCreateTextureBaseMaterial();
+		Prefix = TEXT("MID_Tex_");
+		break;
+	}
 	if (!BaseMat) return nullptr;
 
 	FString SafeName = SourceMaterialPath.Replace(TEXT("/"), TEXT("_")).Replace(TEXT("\\"), TEXT("_"));
-	FString Prefix = bNeedsAlpha ? TEXT("MID_Masked_") : TEXT("MID_Tex_");
 	UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(BaseMat, GetTransientPackage(),
 		FName(*FString::Printf(TEXT("%s%s"), *Prefix, *SafeName)));
 
@@ -855,6 +918,7 @@ void FMaterialImporter::ClearCache()
 	// only reset transient per-import state like resolved materials.
 	TextureBaseMaterial = nullptr;
 	MaskedBaseMaterial = nullptr;
+	TranslucentBaseMaterial = nullptr;
 	ColorBaseMaterial = nullptr;
 }
 

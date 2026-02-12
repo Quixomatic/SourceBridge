@@ -8,6 +8,14 @@ class UMaterialInterface;
 class UMaterialInstanceDynamic;
 class UTexture2D;
 
+/** How a Source material handles transparency. */
+enum class ESourceAlphaMode : uint8
+{
+	Opaque,       // No transparency (default)
+	Masked,       // Binary alpha test ($alphatest) - pixels fully opaque or fully transparent
+	Translucent   // Smooth partial opacity ($translucent) - pixels can be semi-transparent
+};
+
 /** Parsed data from a VMT (Valve Material Type) file. */
 struct FVMTParsedMaterial
 {
@@ -114,11 +122,14 @@ private:
 	/** Get or create the shared base material for masked/alpha-tested textures. */
 	static UMaterial* GetOrCreateMaskedBaseMaterial();
 
+	/** Get or create the shared base material for translucent/semi-transparent textures. */
+	static UMaterial* GetOrCreateTranslucentBaseMaterial();
+
 	/** Get or create the shared base material with a VectorParameter for color. */
 	static UMaterial* GetOrCreateColorBaseMaterial();
 
-	/** Create a MID from the texture base material with the given texture. */
-	static UMaterialInstanceDynamic* CreateTexturedMID(UTexture2D* Texture, const FString& SourceMaterialPath, bool bNeedsAlpha = false);
+	/** Create a MID from the appropriate base material with the given texture. */
+	static UMaterialInstanceDynamic* CreateTexturedMID(UTexture2D* Texture, const FString& SourceMaterialPath, ESourceAlphaMode AlphaMode = ESourceAlphaMode::Opaque);
 
 	/** Create a MID from the color base material with the given color. */
 	static UMaterialInstanceDynamic* CreateColorMID(const FLinearColor& Color, const FString& SourceMaterialPath);
@@ -141,5 +152,6 @@ private:
 	/** Shared base materials (created once, reused for all MIDs). */
 	static UMaterial* TextureBaseMaterial;
 	static UMaterial* MaskedBaseMaterial;
+	static UMaterial* TranslucentBaseMaterial;
 	static UMaterial* ColorBaseMaterial;
 };
