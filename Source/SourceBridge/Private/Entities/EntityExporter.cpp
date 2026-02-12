@@ -116,6 +116,42 @@ FEntityExportResult FEntityExporter::ExportEntities(UWorld* World)
 				}
 				Entity.AddKeyValue(TEXT("skin"), PropActor->Skin);
 				Entity.AddKeyValue(TEXT("solid"), PropActor->Solid);
+
+				// Model scale
+				if (!FMath::IsNearlyEqual(PropActor->ModelScale, 1.0f, 0.001f))
+				{
+					Entity.AddKeyValue(TEXT("modelscale"),
+						FString::Printf(TEXT("%g"), PropActor->ModelScale));
+				}
+
+				// Fade distances
+				if (PropActor->FadeMinDist > 0.0f)
+				{
+					Entity.AddKeyValue(TEXT("fademindist"),
+						FString::Printf(TEXT("%g"), PropActor->FadeMinDist));
+				}
+				if (PropActor->FadeMaxDist > 0.0f)
+				{
+					Entity.AddKeyValue(TEXT("fademaxdist"),
+						FString::Printf(TEXT("%g"), PropActor->FadeMaxDist));
+				}
+
+				// Shadow toggle
+				if (PropActor->bDisableShadows)
+				{
+					Entity.AddKeyValue(TEXT("disableshadows"), 1);
+				}
+
+				// Render color/alpha
+				if (PropActor->RenderColor != FColor(255, 255, 255))
+				{
+					Entity.AddKeyValue(TEXT("rendercolor"), FString::Printf(TEXT("%d %d %d"),
+						PropActor->RenderColor.R, PropActor->RenderColor.G, PropActor->RenderColor.B));
+				}
+				if (PropActor->RenderAmt != 255)
+				{
+					Entity.AddKeyValue(TEXT("renderamt"), PropActor->RenderAmt);
+				}
 			}
 			else if (ASourceTrigger* TriggerActor = Cast<ASourceTrigger>(SourceActor))
 			{

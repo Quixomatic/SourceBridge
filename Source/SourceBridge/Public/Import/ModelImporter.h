@@ -54,6 +54,9 @@ public:
 	/** Clear per-import transient state. Does NOT clear VPK archives. */
 	static void ClearCache();
 
+	/** Get parsed model data for a previously resolved model (for metadata access). */
+	static const FSourceModelData* GetParsedModelData(const FString& SourceModelPath);
+
 	/**
 	 * Check if a model exists in game VPK archives (i.e., is a stock game model).
 	 * Returns true if the MDL file is found in any VPK archive.
@@ -93,15 +96,17 @@ private:
 	static bool bGamePathsInitialized;
 
 	/**
-	 * Find companion model files (.mdl, .vvd, .vtx) on disk or in VPK archives.
+	 * Find companion model files (.mdl, .vvd, .vtx, optionally .phy) on disk or in VPK archives.
 	 * @param SourceModelPath Source-relative path (e.g., "models/props/barrel.mdl")
 	 * @param OutMDL Raw bytes of .mdl file
 	 * @param OutVVD Raw bytes of .vvd file
 	 * @param OutVTX Raw bytes of .vtx file
-	 * @return true if all required files found
+	 * @param OutPHY Raw bytes of .phy file (optional, may be empty)
+	 * @return true if required files found (MDL, VVD, VTX)
 	 */
 	static bool FindModelFiles(const FString& SourceModelPath,
-		TArray<uint8>& OutMDL, TArray<uint8>& OutVVD, TArray<uint8>& OutVTX);
+		TArray<uint8>& OutMDL, TArray<uint8>& OutVVD, TArray<uint8>& OutVTX,
+		TArray<uint8>& OutPHY);
 
 	/** Try to read a file from disk search paths. */
 	static bool ReadFileFromDisk(const FString& RelativePath, TArray<uint8>& OutData);

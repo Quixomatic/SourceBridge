@@ -141,6 +141,42 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Source Prop")
 	float ModelScale = 1.0f;
 
+	/** Minimum fade distance (Source units, -1 = use engine default). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Source Prop")
+	float FadeMinDist = -1.0f;
+
+	/** Maximum fade distance (Source units, 0 = no fade). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Source Prop")
+	float FadeMaxDist = 0.0f;
+
+	/** Disable shadows for this prop. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Source Prop")
+	bool bDisableShadows = false;
+
+	/** Render color tint (from "rendercolor" keyvalue). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Source Prop")
+	FColor RenderColor = FColor(255, 255, 255);
+
+	/** Render alpha (from "renderamt" keyvalue). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Source Prop")
+	int32 RenderAmt = 255;
+
+	/** Surface property from MDL header (for re-export). */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Source Prop|Model Info")
+	FString SurfaceProp;
+
+	/** Whether the original MDL had $staticprop flag (for re-export QC). */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Source Prop|Model Info")
+	bool bIsStaticProp = true;
+
+	/** Mass from MDL header in kg (for re-export QC). */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Source Prop|Model Info")
+	float ModelMass = 0.0f;
+
+	/** Material search dirs from MDL ($cdmaterials, for re-export QC). */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Source Prop|Model Info")
+	TArray<FString> CDMaterials;
+
 	/** Static mesh component for displaying imported model geometry. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Source Prop")
 	TObjectPtr<UStaticMeshComponent> MeshComponent;

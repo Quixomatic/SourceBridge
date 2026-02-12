@@ -90,6 +90,19 @@ void FModelImporter::ClearCache()
 	// Do NOT clear AdditionalSearchPaths, VPKArchives, or bGamePathsInitialized
 }
 
+const FSourceModelData* FModelImporter::GetParsedModelData(const FString& SourceModelPath)
+{
+	FString NormPath = SourceModelPath.ToLower();
+	NormPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+
+	TSharedPtr<FSourceModelData>* CachedData = ParsedModelCache.Find(NormPath);
+	if (CachedData && CachedData->IsValid())
+	{
+		return CachedData->Get();
+	}
+	return nullptr;
+}
+
 // ============================================================================
 // File Search
 // ============================================================================
@@ -144,13 +157,15 @@ bool FModelImporter::ReadFileFromVPK(const FString& RelativePath, TArray<uint8>&
 }
 
 bool FModelImporter::FindModelFiles(const FString& SourceModelPath,
-	TArray<uint8>& OutMDL, TArray<uint8>& OutVVD, TArray<uint8>& OutVTX)
+	TArray<uint8>& OutMDL, TArray<uint8>& OutVVD, TArray<uint8>& OutVTX,
+	TArray<uint8>& OutPHY)
 {
 	// Construct companion file paths
 	FString BasePath = FPaths::ChangeExtension(SourceModelPath, TEXT(""));
 
 	FString MDLPath = BasePath + TEXT(".mdl");
 	FString VVDPath = BasePath + TEXT(".vvd");
+	FString PHYPath = BasePath + TEXT(".phy");
 
 	// VTX has multiple extensions - try in priority order
 	TArray<FString> VTXExtensions = {
@@ -209,8 +224,15 @@ bool FModelImporter::FindModelFiles(const FString& SourceModelPath,
 		return false;
 	}
 
-	UE_LOG(LogTemp, Log, TEXT("ModelImporter: Found model files: %s (MDL=%d, VVD=%d, VTX=%d bytes)"),
-		*SourceModelPath, OutMDL.Num(), OutVVD.Num(), OutVTX.Num());
+	// Find PHY (optional - not required for model import)
+	bool bFoundPHY = ReadFileFromDisk(PHYPath, OutPHY);
+	if (!bFoundPHY)
+	{
+		bFoundPHY = ReadFileFromVPK(PHYPath, OutPHY);
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("ModelImporter: Found model files: %s (MDL=%d, VVD=%d, VTX=%d, PHY=%d bytes)"),
+		*SourceModelPath, OutMDL.Num(), OutVVD.Num(), OutVTX.Num(), OutPHY.Num());
 
 	return true;
 }
@@ -500,9 +522,108 @@ UStaticMesh* FModelImporter::CreateStaticMesh(const FSourceModelData& ModelData,
 		}
 	}
 
+	// Build LOD mesh descriptions
+	TArray<FMeshDescription> LODMeshDescs;
+	LODMeshDescs.Add(MoveTemp(MeshDesc));  // LOD 0 is what we just built
+
+	// Build additional LODs from parsed data
+	for (int32 LOD = 1; LOD < ModelData.LODs.Num(); LOD++)
+	{
+		const auto& LODData = ModelData.LODs[LOD];
+		if (LODData.Vertices.Num() == 0 || LODData.Meshes.Num() == 0)
+			continue;
+
+		FMeshDescription LODMeshDesc;
+		FStaticMeshAttributes LODAttrs(LODMeshDesc);
+		LODAttrs.Register();
+
+		TVertexAttributesRef<FVector3f> LODPositions = LODMeshDesc.GetVertexPositions();
+		TVertexInstanceAttributesRef<FVector3f> LODNormals =
+			LODMeshDesc.VertexInstanceAttributes().GetAttributesRef<FVector3f>(MeshAttribute::VertexInstance::Normal);
+		TVertexInstanceAttributesRef<FVector3f> LODTangents =
+			LODMeshDesc.VertexInstanceAttributes().GetAttributesRef<FVector3f>(MeshAttribute::VertexInstance::Tangent);
+		TVertexInstanceAttributesRef<float> LODBinormalSigns =
+			LODMeshDesc.VertexInstanceAttributes().GetAttributesRef<float>(MeshAttribute::VertexInstance::BinormalSign);
+		TVertexInstanceAttributesRef<FVector2f> LODUVs =
+			LODMeshDesc.VertexInstanceAttributes().GetAttributesRef<FVector2f>(MeshAttribute::VertexInstance::TextureCoordinate);
+		TVertexInstanceAttributesRef<FVector4f> LODColors =
+			LODMeshDesc.VertexInstanceAttributes().GetAttributesRef<FVector4f>(MeshAttribute::VertexInstance::Color);
+
+		// Create polygon groups matching LOD 0's material mapping
+		TMap<int32, FPolygonGroupID> LODMatGroups;
+		for (const auto& M : LODData.Meshes)
+		{
+			if (!LODMatGroups.Contains(M.MaterialIndex))
+			{
+				LODMatGroups.Add(M.MaterialIndex, LODMeshDesc.CreatePolygonGroup());
+			}
+		}
+
+		// Create vertices
+		TArray<FVertexID> LODVertexIDs;
+		LODVertexIDs.SetNum(LODData.Vertices.Num());
+		for (int32 i = 0; i < LODData.Vertices.Num(); i++)
+		{
+			const FSourceModelVertex& SrcV = LODData.Vertices[i];
+			FVertexID VID = LODMeshDesc.CreateVertex();
+			LODVertexIDs[i] = VID;
+			LODPositions[VID] = FVector3f(
+				SrcV.Position.X * InvScale,
+				-SrcV.Position.Y * InvScale,
+				SrcV.Position.Z * InvScale);
+		}
+
+		// Create triangles
+		for (const auto& SrcMesh : LODData.Meshes)
+		{
+			FPolygonGroupID* GID = LODMatGroups.Find(SrcMesh.MaterialIndex);
+			if (!GID) continue;
+
+			for (const auto& Tri : SrcMesh.Triangles)
+			{
+				bool bValid = true;
+				for (int32 v = 0; v < 3; v++)
+				{
+					if (Tri.VertexIndices[v] < 0 || Tri.VertexIndices[v] >= LODData.Vertices.Num())
+					{
+						bValid = false;
+						break;
+					}
+				}
+				if (!bValid) continue;
+
+				TArray<FVertexInstanceID> TriVerts;
+				TriVerts.SetNum(3);
+
+				for (int32 v = 0; v < 3; v++)
+				{
+					int32 SrcIdx = Tri.VertexIndices[v];
+					const FSourceModelVertex& SrcV = LODData.Vertices[SrcIdx];
+
+					FVertexInstanceID VIID = LODMeshDesc.CreateVertexInstance(LODVertexIDs[SrcIdx]);
+					TriVerts[v] = VIID;
+
+					LODNormals[VIID] = FVector3f(SrcV.Normal.X, -SrcV.Normal.Y, SrcV.Normal.Z);
+					LODTangents[VIID] = FVector3f(SrcV.Tangent.X, -SrcV.Tangent.Y, SrcV.Tangent.Z);
+					LODBinormalSigns[VIID] = SrcV.Tangent.W;
+					LODUVs.Set(VIID, 0, FVector2f(SrcV.UV.X, SrcV.UV.Y));
+					LODColors[VIID] = FVector4f(1.0f, 1.0f, 1.0f, 1.0f);
+				}
+
+				TArray<FVertexInstanceID> WindedVerts = { TriVerts[0], TriVerts[2], TriVerts[1] };
+				LODMeshDesc.CreatePolygon(*GID, WindedVerts);
+			}
+		}
+
+		LODMeshDescs.Add(MoveTemp(LODMeshDesc));
+	}
+
 	// Assign to static mesh
-	TArray<const FMeshDescription*> MeshDescs;
-	MeshDescs.Add(&MeshDesc);
+	TArray<const FMeshDescription*> MeshDescPtrs;
+	for (const auto& Desc : LODMeshDescs)
+	{
+		MeshDescPtrs.Add(&Desc);
+	}
 
 	// Set up material slots
 	TArray<FStaticMaterial> StaticMaterials;
@@ -521,10 +642,10 @@ UStaticMesh* FModelImporter::CreateStaticMesh(const FSourceModelData& ModelData,
 	BuildParams.bMarkPackageDirty = false;
 	BuildParams.bBuildSimpleCollision = false;
 	BuildParams.bFastBuild = true;
-	StaticMesh->BuildFromMeshDescriptions(MeshDescs, BuildParams);
+	StaticMesh->BuildFromMeshDescriptions(MeshDescPtrs, BuildParams);
 
-	UE_LOG(LogTemp, Log, TEXT("ModelImporter: Created UStaticMesh '%s' (%d verts, %d tris, %d materials)"),
-		*MeshName, ModelData.Vertices.Num(), TotalTris, Materials.Num());
+	UE_LOG(LogTemp, Log, TEXT("ModelImporter: Created UStaticMesh '%s' (%d verts, %d tris, %d materials, %d LODs)"),
+		*MeshName, ModelData.Vertices.Num(), TotalTris, Materials.Num(), LODMeshDescs.Num());
 
 	return StaticMesh;
 }
@@ -555,22 +676,28 @@ UStaticMesh* FModelImporter::ResolveModel(const FString& SourceModelPath, int32 
 	else
 	{
 		// Find and load companion files
-		TArray<uint8> MDLData, VVDData, VTXData;
-		if (!FindModelFiles(NormPath, MDLData, VVDData, VTXData))
+		TArray<uint8> MDLData, VVDData, VTXData, PHYData;
+		if (!FindModelFiles(NormPath, MDLData, VVDData, VTXData, PHYData))
 		{
 			UE_LOG(LogTemp, Warning, TEXT("ModelImporter: Model files not found: %s"), *SourceModelPath);
 			ModelCache.Add(CacheKey, nullptr);
 			return nullptr;
 		}
 
-		// Parse
-		ParsedData = MakeShared<FSourceModelData>(FMDLReader::ReadModel(MDLData, VVDData, VTXData));
+		// Parse with all LODs
+		ParsedData = MakeShared<FSourceModelData>(FMDLReader::ReadModelAllLODs(MDLData, VVDData, VTXData));
 		if (!ParsedData->bSuccess)
 		{
 			UE_LOG(LogTemp, Warning, TEXT("ModelImporter: Failed to parse model '%s': %s"),
 				*SourceModelPath, *ParsedData->ErrorMessage);
 			ModelCache.Add(CacheKey, nullptr);
 			return nullptr;
+		}
+
+		// Parse PHY if available
+		if (PHYData.Num() > 0)
+		{
+			FMDLReader::ParsePHY(PHYData, *ParsedData);
 		}
 
 		ParsedModelCache.Add(NormPath, ParsedData);

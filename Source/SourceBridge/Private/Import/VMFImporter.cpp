@@ -2,6 +2,7 @@
 #include "Import/VMFReader.h"
 #include "Import/MaterialImporter.h"
 #include "Import/ModelImporter.h"
+#include "Import/MDLReader.h"
 #include "Actors/SourceEntityActor.h"
 #include "Entities/EntityIOConnection.h"
 #include "Engine/Brush.h"
@@ -850,7 +851,6 @@ bool FVMFImporter::ImportPointEntity(const FVMFKeyValues& EntityBlock, UWorld* W
 			// Override the default classname from constructor with the actual one
 			Prop->SourceClassname = ClassName;
 			float PropModelScale = 1.0f;
-			bool bDisableShadows = false;
 
 			for (const auto& KV : KeyValues)
 			{
@@ -863,7 +863,25 @@ bool FVMFImporter::ImportPointEntity(const FVMFKeyValues& EntityBlock, UWorld* W
 				else if (KV.Key.Equals(TEXT("modelscale"), ESearchCase::IgnoreCase))
 					PropModelScale = FCString::Atof(*KV.Value);
 				else if (KV.Key.Equals(TEXT("disableshadows"), ESearchCase::IgnoreCase))
-					bDisableShadows = FCString::Atoi(*KV.Value) != 0;
+					Prop->bDisableShadows = FCString::Atoi(*KV.Value) != 0;
+				else if (KV.Key.Equals(TEXT("fademindist"), ESearchCase::IgnoreCase))
+					Prop->FadeMinDist = FCString::Atof(*KV.Value);
+				else if (KV.Key.Equals(TEXT("fademaxdist"), ESearchCase::IgnoreCase))
+					Prop->FadeMaxDist = FCString::Atof(*KV.Value);
+				else if (KV.Key.Equals(TEXT("rendercolor"), ESearchCase::IgnoreCase))
+				{
+					TArray<FString> Parts;
+					KV.Value.ParseIntoArray(Parts, TEXT(" "));
+					if (Parts.Num() >= 3)
+					{
+						Prop->RenderColor = FColor(
+							FCString::Atoi(*Parts[0]),
+							FCString::Atoi(*Parts[1]),
+							FCString::Atoi(*Parts[2]));
+					}
+				}
+				else if (KV.Key.Equals(TEXT("renderamt"), ESearchCase::IgnoreCase))
+					Prop->RenderAmt = FCString::Atoi(*KV.Value);
 			}
 
 			Prop->ModelScale = PropModelScale;
@@ -883,9 +901,30 @@ bool FVMFImporter::ImportPointEntity(const FVMFKeyValues& EntityBlock, UWorld* W
 					}
 
 					// Apply shadow settings
-					if (bDisableShadows && Prop->MeshComponent)
+					if (Prop->bDisableShadows && Prop->MeshComponent)
 					{
 						Prop->MeshComponent->SetCastShadow(false);
+					}
+
+					// Apply fade distances to component
+					if (Prop->MeshComponent)
+					{
+						if (Prop->FadeMinDist > 0.0f)
+						{
+							// Convert Source units to UE units (Source units ÷ 0.525)
+							Prop->MeshComponent->LDMaxDrawDistance = Prop->FadeMaxDist / 0.525f;
+							Prop->MeshComponent->bNeverDistanceCull = false;
+						}
+					}
+
+					// Store model metadata from parsed data for re-export
+					const FSourceModelData* ParsedModel = FModelImporter::GetParsedModelData(Prop->ModelPath);
+					if (ParsedModel)
+					{
+						Prop->SurfaceProp = ParsedModel->SurfaceProp;
+						Prop->bIsStaticProp = ParsedModel->bIsStaticProp;
+						Prop->ModelMass = ParsedModel->Mass;
+						Prop->CDMaterials = ParsedModel->MaterialSearchDirs;
 					}
 				}
 			}

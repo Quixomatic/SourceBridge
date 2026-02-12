@@ -73,16 +73,58 @@ namespace MDLOffsets
 	constexpr int32 AttachmentCount = 240;
 	constexpr int32 AttachmentOffset = 244;
 
+	constexpr int32 LocalNodeCount = 248;
+	constexpr int32 LocalNodeIndex = 252;
+	constexpr int32 LocalNodeNameIndex = 256;
+
+	constexpr int32 FlexDescCount = 260;
+	constexpr int32 FlexDescIndex = 264;
+	constexpr int32 FlexControllerCount = 268;
+	constexpr int32 FlexControllerIndex = 272;
+	constexpr int32 FlexRulesCount = 276;
+	constexpr int32 FlexRulesIndex = 280;
+
+	constexpr int32 IKChainCount = 284;
+	constexpr int32 IKChainIndex = 288;
+	constexpr int32 MouthsCount = 292;
+	constexpr int32 MouthsIndex = 296;
+	constexpr int32 LocalPoseParamCount = 300;
+	constexpr int32 LocalPoseParamIndex = 304;
+
 	constexpr int32 SurfacePropIndex = 308;
 
 	constexpr int32 KeyValueIndex = 312;
 	constexpr int32 KeyValueCount = 316;
 
+	constexpr int32 IKLockCount = 320;
+	constexpr int32 IKLockIndex = 324;
+
 	constexpr int32 Mass = 328;
 	constexpr int32 Contents = 332;
 
+	constexpr int32 IncludeModelCount = 336;
+	constexpr int32 IncludeModelIndex = 340;
+
+	constexpr int32 VirtualModel = 344;
+
+	constexpr int32 AnimBlocksNameIndex = 348;
+	constexpr int32 AnimBlocksCount = 352;
+	constexpr int32 AnimBlocksIndex = 356;
+	constexpr int32 AnimBlockModel = 360;
+
+	constexpr int32 BoneTableNameIndex = 364;
+	constexpr int32 VertexBase = 368;
+	constexpr int32 OffsetBase = 372;
+
+	constexpr int32 DirectionalDotProduct = 376;  // byte
 	constexpr int32 RootLOD = 377;       // byte
 	constexpr int32 NumAllowedRootLODs = 378; // byte
+
+	constexpr int32 FlexControllerUICount = 384;
+	constexpr int32 FlexControllerUIIndex = 388;
+	constexpr int32 VertAnimFixedPointScale = 392;
+
+	constexpr int32 StudioHdr2Index = 400;
 
 	constexpr int32 HeaderSize = 408;
 }
@@ -132,6 +174,16 @@ namespace VTXOffsets
 
 	// VTX Vertex_t is 9 bytes on disk (NOT 10 due to struct padding)
 	constexpr int32 VTXVertexSize = 9;
+}
+
+// PHY offsets
+namespace PHYOffsets
+{
+	constexpr int32 Size = 0;          // int (header size, usually 16)
+	constexpr int32 ID = 4;           // int (0)
+	constexpr int32 SolidCount = 8;   // int
+	constexpr int32 Checksum = 12;    // int
+	constexpr int32 HeaderSize = 16;
 }
 
 // Strip flags
@@ -380,6 +432,478 @@ bool FMDLReader::ParseMDLSurfaceProp(const uint8* Data, int32 DataSize, FSourceM
 		OutModel.SurfaceProp = ReadNullTermString(Data, DataSize, SurfacePropIndex);
 	}
 	return true;
+}
+
+// ============================================================================
+// MDL Bone Controllers
+// ============================================================================
+
+bool FMDLReader::ParseMDLBoneControllers(const uint8* Data, int32 DataSize, FSourceModelData& OutModel)
+{
+	int32 Count = ReadValue<int32>(Data, MDLOffsets::BoneControllerCount);
+	int32 Offset = ReadValue<int32>(Data, MDLOffsets::BoneControllerOffset);
+
+	if (Count == 0 || Offset <= 0) return true;
+
+	// mstudiobonecontroller_t: bone(4) type(4) start(4) end(4) rest(4) inputfield(4) = 24 bytes
+	constexpr int32 StructSize = 24;
+
+	for (int32 i = 0; i < Count; i++)
+	{
+		int32 Base = Offset + i * StructSize;
+		if (Base + StructSize > DataSize) break;
+
+		FSourceBoneController BC;
+		BC.BoneIndex = ReadValue<int32>(Data, Base + 0);
+		BC.Type = ReadValue<int32>(Data, Base + 4);
+		BC.Start = ReadValue<float>(Data, Base + 8);
+		BC.End = ReadValue<float>(Data, Base + 12);
+		BC.InputField = ReadValue<int32>(Data, Base + 20);
+
+		OutModel.BoneControllers.Add(MoveTemp(BC));
+	}
+
+	UE_LOG(LogTemp, Verbose, TEXT("MDLReader: Parsed %d bone controllers"), OutModel.BoneControllers.Num());
+	return true;
+}
+
+// ============================================================================
+// MDL Hitbox Sets
+// ============================================================================
+
+bool FMDLReader::ParseMDLHitboxSets(const uint8* Data, int32 DataSize, FSourceModelData& OutModel)
+{
+	int32 Count = ReadValue<int32>(Data, MDLOffsets::HitboxCount);
+	int32 Offset = ReadValue<int32>(Data, MDLOffsets::HitboxOffset);
+
+	if (Count == 0 || Offset <= 0) return true;
+
+	// mstudiohitboxset_t: sznameindex(4) numhitboxes(4) hitboxindex(4) = 12 bytes
+	constexpr int32 SetStructSize = 12;
+
+	for (int32 s = 0; s < Count; s++)
+	{
+		int32 SetBase = Offset + s * SetStructSize;
+		if (SetBase + SetStructSize > DataSize) break;
+
+		FSourceHitboxSet HBSet;
+
+		int32 NameRelOffset = ReadValue<int32>(Data, SetBase + 0);
+		HBSet.Name = ReadNullTermString(Data, DataSize, SetBase + NameRelOffset);
+
+		int32 NumHitboxes = ReadValue<int32>(Data, SetBase + 4);
+		int32 HitboxIndex = ReadValue<int32>(Data, SetBase + 8);
+
+		// mstudiobbox_t: bone(4) group(4) bbmin(12) bbmax(12) sznameindex(4) ... = 68 bytes (v48)
+		constexpr int32 HBStructSize = 68;
+
+		for (int32 h = 0; h < NumHitboxes; h++)
+		{
+			int32 HBBase = SetBase + HitboxIndex + h * HBStructSize;
+			if (HBBase + 32 > DataSize) break;  // need at least bone + group + bbmin + bbmax
+
+			FSourceHitbox HB;
+			HB.BoneIndex = ReadValue<int32>(Data, HBBase + 0);
+			HB.Group = ReadValue<int32>(Data, HBBase + 4);
+			HB.BBMin.X = ReadValue<float>(Data, HBBase + 8);
+			HB.BBMin.Y = ReadValue<float>(Data, HBBase + 12);
+			HB.BBMin.Z = ReadValue<float>(Data, HBBase + 16);
+			HB.BBMax.X = ReadValue<float>(Data, HBBase + 20);
+			HB.BBMax.Y = ReadValue<float>(Data, HBBase + 24);
+			HB.BBMax.Z = ReadValue<float>(Data, HBBase + 28);
+
+			if (HBBase + 36 <= DataSize)
+			{
+				int32 HBNameOffset = ReadValue<int32>(Data, HBBase + 32);
+				if (HBNameOffset > 0)
+				{
+					HB.Name = ReadNullTermString(Data, DataSize, HBBase + HBNameOffset);
+				}
+			}
+
+			HBSet.Hitboxes.Add(MoveTemp(HB));
+		}
+
+		OutModel.HitboxSets.Add(MoveTemp(HBSet));
+	}
+
+	UE_LOG(LogTemp, Verbose, TEXT("MDLReader: Parsed %d hitbox sets"), OutModel.HitboxSets.Num());
+	return true;
+}
+
+// ============================================================================
+// MDL Attachments
+// ============================================================================
+
+bool FMDLReader::ParseMDLAttachments(const uint8* Data, int32 DataSize, FSourceModelData& OutModel)
+{
+	int32 Count = ReadValue<int32>(Data, MDLOffsets::AttachmentCount);
+	int32 Offset = ReadValue<int32>(Data, MDLOffsets::AttachmentOffset);
+
+	if (Count == 0 || Offset <= 0) return true;
+
+	// mstudioattachment_t: sznameindex(4) flags(4) localbone(4) local[12floats](48) unused[8ints](32) = 92 bytes
+	constexpr int32 StructSize = 92;
+
+	for (int32 i = 0; i < Count; i++)
+	{
+		int32 Base = Offset + i * StructSize;
+		if (Base + StructSize > DataSize) break;
+
+		FSourceAttachment Att;
+
+		int32 NameRelOffset = ReadValue<int32>(Data, Base + 0);
+		Att.Name = ReadNullTermString(Data, DataSize, Base + NameRelOffset);
+		Att.BoneIndex = ReadValue<int32>(Data, Base + 8);
+
+		// local is a 3x4 matrix (12 floats) at offset 12
+		// Extract position from last column (offsets 36, 40, 44 within the matrix)
+		Att.Position.X = ReadValue<float>(Data, Base + 12 + 12);  // matrix[0][3]
+		Att.Position.Y = ReadValue<float>(Data, Base + 12 + 28);  // matrix[1][3]
+		Att.Position.Z = ReadValue<float>(Data, Base + 12 + 44);  // matrix[2][3]
+
+		OutModel.Attachments.Add(MoveTemp(Att));
+	}
+
+	UE_LOG(LogTemp, Verbose, TEXT("MDLReader: Parsed %d attachments"), OutModel.Attachments.Num());
+	return true;
+}
+
+// ============================================================================
+// MDL Key-Value Data
+// ============================================================================
+
+bool FMDLReader::ParseMDLKeyValues(const uint8* Data, int32 DataSize, FSourceModelData& OutModel)
+{
+	int32 KVIndex = ReadValue<int32>(Data, MDLOffsets::KeyValueIndex);
+	int32 KVCount = ReadValue<int32>(Data, MDLOffsets::KeyValueCount);
+
+	if (KVCount <= 0 || KVIndex <= 0 || KVIndex >= DataSize) return true;
+
+	int32 ReadSize = FMath::Min(KVCount, DataSize - KVIndex);
+	OutModel.KeyValueData = FString(ReadSize, (const char*)(Data + KVIndex));
+
+	UE_LOG(LogTemp, Verbose, TEXT("MDLReader: Key-value data: %d bytes"), ReadSize);
+	return true;
+}
+
+// ============================================================================
+// MDL Include Models ($includemodel references)
+// ============================================================================
+
+bool FMDLReader::ParseMDLIncludeModels(const uint8* Data, int32 DataSize, FSourceModelData& OutModel)
+{
+	int32 Count = ReadValue<int32>(Data, MDLOffsets::IncludeModelCount);
+	int32 Offset = ReadValue<int32>(Data, MDLOffsets::IncludeModelIndex);
+
+	if (Count == 0 || Offset <= 0) return true;
+
+	// mstudiomodelgroup_t: szlabelindex(4) sznameindex(4) = 8 bytes
+	constexpr int32 StructSize = 8;
+
+	for (int32 i = 0; i < Count; i++)
+	{
+		int32 Base = Offset + i * StructSize;
+		if (Base + StructSize > DataSize) break;
+
+		FSourceIncludeModel Inc;
+		int32 NameRelOffset = ReadValue<int32>(Data, Base + 4);
+		Inc.Name = ReadNullTermString(Data, DataSize, Base + NameRelOffset);
+
+		OutModel.IncludeModels.Add(MoveTemp(Inc));
+	}
+
+	UE_LOG(LogTemp, Verbose, TEXT("MDLReader: Parsed %d include model references"), OutModel.IncludeModels.Num());
+	return true;
+}
+
+// ============================================================================
+// MDL Secondary Header (studiohdr2_t)
+// ============================================================================
+
+bool FMDLReader::ParseMDLSecondaryHeader(const uint8* Data, int32 DataSize, FSourceModelData& OutModel)
+{
+	int32 Hdr2Index = ReadValue<int32>(Data, MDLOffsets::StudioHdr2Index);
+	if (Hdr2Index <= 0 || Hdr2Index >= DataSize) return true;
+
+	// studiohdr2_t starts at Hdr2Index
+	// srcbonetransform_count(4) srcbonetransform_index(4) illumpositionattachmentindex(4)
+	// flMaxEyeDeflection(4) linearbone_index(4) ... = at least 20 bytes
+	if (Hdr2Index + 20 > DataSize) return true;
+
+	OutModel.bHasSecondaryHeader = true;
+	OutModel.SrcBoneTransformCount = ReadValue<int32>(Data, Hdr2Index + 0);
+	OutModel.IllumPositionAttachmentIndex = ReadValue<int32>(Data, Hdr2Index + 8);
+	OutModel.MaxEyeDeflection = ReadValue<float>(Data, Hdr2Index + 12);
+
+	UE_LOG(LogTemp, Verbose, TEXT("MDLReader: Secondary header found (srcBoneTransforms=%d, maxEyeDeflection=%.2f)"),
+		OutModel.SrcBoneTransformCount, OutModel.MaxEyeDeflection);
+	return true;
+}
+
+// ============================================================================
+// MDL Animation Descriptors (metadata only)
+// ============================================================================
+
+bool FMDLReader::ParseMDLAnimDescs(const uint8* Data, int32 DataSize, FSourceModelData& OutModel)
+{
+	int32 Count = ReadValue<int32>(Data, MDLOffsets::LocalAnimCount);
+	int32 Offset = ReadValue<int32>(Data, MDLOffsets::LocalAnimOffset);
+
+	if (Count == 0 || Offset <= 0) return true;
+
+	// mstudioanimdesc_t is complex and version-dependent, but the first fields are stable:
+	// baseptr(4) sznameindex(4) fps(4) flags(4) numframes(4) ... = at least 20 bytes
+	// Full struct is ~100 bytes but varies; we only read the key metadata fields
+	constexpr int32 MinFieldsSize = 20;
+
+	for (int32 i = 0; i < Count; i++)
+	{
+		// We don't know the exact struct size, so we read conservatively.
+		// Try 100 bytes per struct (typical v48), fall back if out of bounds.
+		int32 Base = Offset + i * 100;
+		if (Base + MinFieldsSize > DataSize) break;
+
+		FSourceAnimDesc Anim;
+
+		int32 NameRelOffset = ReadValue<int32>(Data, Base + 4);
+		if (NameRelOffset > 0 && Base + NameRelOffset < DataSize)
+		{
+			Anim.Name = ReadNullTermString(Data, DataSize, Base + NameRelOffset);
+		}
+		Anim.FPS = ReadValue<float>(Data, Base + 8);
+		Anim.Flags = ReadValue<int32>(Data, Base + 12);
+		Anim.NumFrames = ReadValue<int32>(Data, Base + 16);
+
+		OutModel.Animations.Add(MoveTemp(Anim));
+	}
+
+	UE_LOG(LogTemp, Verbose, TEXT("MDLReader: Parsed %d animation descriptors"), OutModel.Animations.Num());
+	return true;
+}
+
+// ============================================================================
+// MDL Sequence Descriptors (metadata only)
+// ============================================================================
+
+bool FMDLReader::ParseMDLSeqDescs(const uint8* Data, int32 DataSize, FSourceModelData& OutModel)
+{
+	int32 Count = ReadValue<int32>(Data, MDLOffsets::LocalSeqCount);
+	int32 Offset = ReadValue<int32>(Data, MDLOffsets::LocalSeqOffset);
+
+	if (Count == 0 || Offset <= 0) return true;
+
+	// mstudioseqdesc_t is very large (~212 bytes for v48), we read only key fields:
+	// baseptr(4) szlabelindex(4) szactivitynameindex(4) flags(4) activity(4) actweight(4)
+	// numevents(4) eventindex(4) ... fadeintime(4) fadeouttime(4) ...
+	constexpr int32 StructSize = 212;
+	constexpr int32 MinFields = 28;
+
+	for (int32 i = 0; i < Count; i++)
+	{
+		int32 Base = Offset + i * StructSize;
+		if (Base + MinFields > DataSize) break;
+
+		FSourceSeqDesc Seq;
+
+		int32 LabelRelOffset = ReadValue<int32>(Data, Base + 4);
+		if (LabelRelOffset > 0 && Base + LabelRelOffset < DataSize)
+		{
+			Seq.Name = ReadNullTermString(Data, DataSize, Base + LabelRelOffset);
+		}
+
+		Seq.Flags = ReadValue<int32>(Data, Base + 12);
+		Seq.Activity = ReadValue<int32>(Data, Base + 16);
+		Seq.ActivityWeight = ReadValue<int32>(Data, Base + 20);
+		Seq.NumEvents = ReadValue<int32>(Data, Base + 24);
+
+		// fadeintime/fadeouttime are further in the struct
+		if (Base + 52 <= DataSize)
+		{
+			Seq.FadeInTime = ReadValue<float>(Data, Base + 44);
+			Seq.FadeOutTime = ReadValue<float>(Data, Base + 48);
+		}
+
+		OutModel.Sequences.Add(MoveTemp(Seq));
+	}
+
+	UE_LOG(LogTemp, Verbose, TEXT("MDLReader: Parsed %d sequence descriptors"), OutModel.Sequences.Num());
+	return true;
+}
+
+// ============================================================================
+// MDL Body Parts (metadata for body group tracking)
+// ============================================================================
+
+bool FMDLReader::ParseMDLBodyParts(const uint8* Data, int32 DataSize, FSourceModelData& OutModel)
+{
+	int32 Count = ReadValue<int32>(Data, MDLOffsets::BodyPartCount);
+	int32 Offset = ReadValue<int32>(Data, MDLOffsets::BodyPartOffset);
+
+	if (Count == 0 || Offset <= 0) return true;
+
+	for (int32 i = 0; i < Count; i++)
+	{
+		int32 Base = Offset + i * MDLStructSizes::BodyPart;
+		if (Base + MDLStructSizes::BodyPart > DataSize) break;
+
+		FSourceBodyPart BP;
+
+		int32 NameRelOffset = ReadValue<int32>(Data, Base + 0);
+		if (NameRelOffset > 0)
+		{
+			BP.Name = ReadNullTermString(Data, DataSize, Base + NameRelOffset);
+		}
+		BP.NumModels = ReadValue<int32>(Data, Base + 4);
+		BP.Base = ReadValue<int32>(Data, Base + 8);
+
+		OutModel.BodyParts.Add(MoveTemp(BP));
+	}
+
+	UE_LOG(LogTemp, Verbose, TEXT("MDLReader: Parsed %d body parts"), OutModel.BodyParts.Num());
+	return true;
+}
+
+// ============================================================================
+// PHY Binary Reader (collision data)
+// ============================================================================
+
+bool FMDLReader::ParsePHY(const TArray<uint8>& PHYData, FSourceModelData& OutModel)
+{
+	const uint8* Data = PHYData.GetData();
+	int32 DataSize = PHYData.Num();
+
+	if (DataSize < PHYOffsets::HeaderSize)
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("MDLReader: PHY file too small (%d bytes)"), DataSize);
+		return false;
+	}
+
+	int32 HeaderSize = ReadValue<int32>(Data, PHYOffsets::Size);
+	int32 ID = ReadValue<int32>(Data, PHYOffsets::ID);
+	int32 SolidCount = ReadValue<int32>(Data, PHYOffsets::SolidCount);
+	int32 Checksum = ReadValue<int32>(Data, PHYOffsets::Checksum);
+
+	if (Checksum != OutModel.Checksum)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("MDLReader: PHY checksum mismatch (PHY=%d, MDL=%d)"), Checksum, OutModel.Checksum);
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("MDLReader: PHY header: size=%d id=%d solids=%d checksum=%d"),
+		HeaderSize, ID, SolidCount, Checksum);
+
+	// Store raw PHY data for round-trip preservation
+	OutModel.RawPhyData = PHYData;
+
+	// Parse each solid's convex hull data
+	// After the header, each solid starts with a compact surface header.
+	// The IVP compact surface format:
+	//   size(4) - total size of this solid's data including this int
+	//   vphysics_id(4) - "VPHY" or similar
+	//   version(2) - usually 0x0100
+	//   model_type(2) - 0x0000 = polygon
+	//   surface_size(4)
+	//   ...then vertex and face data in IVP format
+
+	int32 Pos = HeaderSize;  // Start after header (headerSize field tells us where)
+
+	for (int32 s = 0; s < SolidCount && Pos + 4 < DataSize; s++)
+	{
+		int32 SolidSize = ReadValue<int32>(Data, Pos);
+		if (SolidSize <= 0 || Pos + SolidSize > DataSize)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("MDLReader: PHY solid %d has invalid size %d at offset %d"), s, SolidSize, Pos);
+			break;
+		}
+
+		// The compact surface data is complex (IVP format). We store the raw data
+		// for round-trip but also attempt to extract vertices for collision visualization.
+		FSourcePhySolid Solid;
+
+		// Scan for vertex data within the solid block.
+		// IVP compact surface format has vertices stored after ledge tree data.
+		// For now, we create an empty solid entry and rely on RawPhyData for round-trip.
+		OutModel.PhySolids.Add(MoveTemp(Solid));
+
+		Pos += SolidSize;
+	}
+
+	// After all solids, there may be key-value text data (surface properties, etc.)
+	// This is a null-terminated string in Valve KeyValues format
+	if (Pos < DataSize)
+	{
+		FString PhyKV = ReadNullTermString(Data, DataSize, Pos);
+		if (!PhyKV.IsEmpty())
+		{
+			UE_LOG(LogTemp, Verbose, TEXT("MDLReader: PHY key-value data: %s"), *PhyKV.Left(200));
+		}
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("MDLReader: Parsed PHY: %d solids"), OutModel.PhySolids.Num());
+	return true;
+}
+
+// ============================================================================
+// Debug OBJ Dump
+// ============================================================================
+
+bool FMDLReader::DumpModelAsOBJ(const FSourceModelData& ModelData, const FString& OutputPath)
+{
+	FString OBJ;
+	OBJ += FString::Printf(TEXT("# Source model: %s\n"), *ModelData.Name);
+	OBJ += FString::Printf(TEXT("# Vertices: %d\n"), ModelData.Vertices.Num());
+	OBJ += FString::Printf(TEXT("# Materials: %d\n"), ModelData.MaterialNames.Num());
+	OBJ += TEXT("\n");
+
+	// Write vertices
+	for (const auto& V : ModelData.Vertices)
+	{
+		OBJ += FString::Printf(TEXT("v %f %f %f\n"), V.Position.X, V.Position.Y, V.Position.Z);
+	}
+
+	// Write normals
+	for (const auto& V : ModelData.Vertices)
+	{
+		OBJ += FString::Printf(TEXT("vn %f %f %f\n"), V.Normal.X, V.Normal.Y, V.Normal.Z);
+	}
+
+	// Write UVs
+	for (const auto& V : ModelData.Vertices)
+	{
+		OBJ += FString::Printf(TEXT("vt %f %f\n"), V.UV.X, 1.0f - V.UV.Y);
+	}
+
+	OBJ += TEXT("\n");
+
+	// Write faces per mesh (material group)
+	for (int32 m = 0; m < ModelData.Meshes.Num(); m++)
+	{
+		const auto& Mesh = ModelData.Meshes[m];
+		FString MatName = (Mesh.MaterialIndex >= 0 && Mesh.MaterialIndex < ModelData.MaterialNames.Num())
+			? ModelData.MaterialNames[Mesh.MaterialIndex]
+			: FString::Printf(TEXT("material_%d"), Mesh.MaterialIndex);
+
+		OBJ += FString::Printf(TEXT("g mesh_%d\n"), m);
+		OBJ += FString::Printf(TEXT("usemtl %s\n"), *MatName);
+
+		for (const auto& Tri : Mesh.Triangles)
+		{
+			// OBJ is 1-indexed
+			OBJ += FString::Printf(TEXT("f %d/%d/%d %d/%d/%d %d/%d/%d\n"),
+				Tri.VertexIndices[0] + 1, Tri.VertexIndices[0] + 1, Tri.VertexIndices[0] + 1,
+				Tri.VertexIndices[1] + 1, Tri.VertexIndices[1] + 1, Tri.VertexIndices[1] + 1,
+				Tri.VertexIndices[2] + 1, Tri.VertexIndices[2] + 1, Tri.VertexIndices[2] + 1);
+		}
+	}
+
+	if (FFileHelper::SaveStringToFile(OBJ, *OutputPath))
+	{
+		UE_LOG(LogTemp, Log, TEXT("MDLReader: Dumped model as OBJ: %s"), *OutputPath);
+		return true;
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("MDLReader: Failed to write OBJ to: %s"), *OutputPath);
+	return false;
 }
 
 // ============================================================================
@@ -783,12 +1307,24 @@ FSourceModelData FMDLReader::ReadModel(
 		return Model;
 	}
 
-	// Parse MDL sub-sections
-	ParseMDLMaterials(MDLData.GetData(), MDLData.Num(), Model);
-	ParseMDLTextureDirs(MDLData.GetData(), MDLData.Num(), Model);
-	ParseMDLSkinTable(MDLData.GetData(), MDLData.Num(), Model);
-	ParseMDLBones(MDLData.GetData(), MDLData.Num(), Model);
-	ParseMDLSurfaceProp(MDLData.GetData(), MDLData.Num(), Model);
+	// Parse all MDL sub-sections
+	const uint8* Data = MDLData.GetData();
+	int32 Size = MDLData.Num();
+
+	ParseMDLMaterials(Data, Size, Model);
+	ParseMDLTextureDirs(Data, Size, Model);
+	ParseMDLSkinTable(Data, Size, Model);
+	ParseMDLBones(Data, Size, Model);
+	ParseMDLSurfaceProp(Data, Size, Model);
+	ParseMDLBoneControllers(Data, Size, Model);
+	ParseMDLHitboxSets(Data, Size, Model);
+	ParseMDLAttachments(Data, Size, Model);
+	ParseMDLKeyValues(Data, Size, Model);
+	ParseMDLIncludeModels(Data, Size, Model);
+	ParseMDLSecondaryHeader(Data, Size, Model);
+	ParseMDLAnimDescs(Data, Size, Model);
+	ParseMDLSeqDescs(Data, Size, Model);
+	ParseMDLBodyParts(Data, Size, Model);
 
 	// Parse VVD vertices
 	if (!ParseVVD(VVDData.GetData(), VVDData.Num(), Model.Checksum, RequestedLOD, Model))
@@ -804,8 +1340,54 @@ FSourceModelData FMDLReader::ReadModel(
 	}
 
 	Model.bSuccess = true;
-	UE_LOG(LogTemp, Log, TEXT("MDLReader: Successfully parsed '%s': %d verts, %d meshes, %d materials, %d bones"),
-		*Model.Name, Model.Vertices.Num(), Model.Meshes.Num(), Model.MaterialNames.Num(), Model.Bones.Num());
+	UE_LOG(LogTemp, Log, TEXT("MDLReader: Successfully parsed '%s': %d verts, %d meshes, %d materials, %d bones, %d hitboxSets, %d attachments, %d anims, %d seqs"),
+		*Model.Name, Model.Vertices.Num(), Model.Meshes.Num(), Model.MaterialNames.Num(),
+		Model.Bones.Num(), Model.HitboxSets.Num(), Model.Attachments.Num(),
+		Model.Animations.Num(), Model.Sequences.Num());
 
+	return Model;
+}
+
+FSourceModelData FMDLReader::ReadModelAllLODs(
+	const TArray<uint8>& MDLData,
+	const TArray<uint8>& VVDData,
+	const TArray<uint8>& VTXData)
+{
+	// First parse LOD 0 (highest detail) as the primary data
+	FSourceModelData Model = ReadModel(MDLData, VVDData, VTXData, 0);
+	if (!Model.bSuccess) return Model;
+
+	// Store LOD 0 data
+	FSourceModelData::FLODData LOD0;
+	LOD0.Vertices = Model.Vertices;
+	LOD0.Meshes = Model.Meshes;
+	LOD0.SwitchPoint = 0.0f;
+	Model.LODs.Add(MoveTemp(LOD0));
+
+	// Parse additional LODs
+	for (int32 LOD = 1; LOD < Model.NumLODs; LOD++)
+	{
+		FSourceModelData LODModel;
+
+		// We only need basic header info (already parsed), then VVD + VTX for this LOD
+		if (ParseVVD(VVDData.GetData(), VVDData.Num(), Model.Checksum, LOD, LODModel) &&
+			ParseVTX(VTXData.GetData(), VTXData.Num(), Model.Version, Model.Checksum,
+				MDLData.GetData(), MDLData.Num(), LOD, LODModel))
+		{
+			FSourceModelData::FLODData LODData;
+			LODData.Vertices = MoveTemp(LODModel.Vertices);
+			LODData.Meshes = MoveTemp(LODModel.Meshes);
+			Model.LODs.Add(MoveTemp(LODData));
+
+			UE_LOG(LogTemp, Verbose, TEXT("MDLReader: LOD %d: %d verts, %d meshes"),
+				LOD, Model.LODs.Last().Vertices.Num(), Model.LODs.Last().Meshes.Num());
+		}
+		else
+		{
+			break;  // Stop if a LOD fails to parse
+		}
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("MDLReader: Parsed %d LOD levels for '%s'"), Model.LODs.Num(), *Model.Name);
 	return Model;
 }
