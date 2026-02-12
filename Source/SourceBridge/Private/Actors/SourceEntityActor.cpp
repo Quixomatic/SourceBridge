@@ -305,64 +305,72 @@ void ASourceBrushEntity::BeginPlay()
 
 	const FString& CN = SourceClassname;
 
-	// Trigger entities: invisible, overlap-only collision (walk through, fires events)
-	if (CN.StartsWith(TEXT("trigger_")))
+	// Determine collision behavior from entity classname
+	bool bIsTrigger = CN.StartsWith(TEXT("trigger_"));
+	bool bIsClip = CN.Equals(TEXT("func_clip_vphysics"), ESearchCase::IgnoreCase) ||
+				   CN.Equals(TEXT("func_clip"), ESearchCase::IgnoreCase);
+	bool bIsIllusionary = CN.Equals(TEXT("func_illusionary"), ESearchCase::IgnoreCase);
+
+	for (UProceduralMeshComponent* Mesh : BrushMeshes)
 	{
-		for (UProceduralMeshComponent* Mesh : BrushMeshes)
+		if (!Mesh) continue;
+
+		// --- Visibility: driven by actual materials (like vbsp strips tool textures) ---
+		int32 NumSections = Mesh->GetNumSections();
+		if (NumSections > 0)
 		{
-			if (Mesh)
+			bool bAllToolTextures = true;
+			for (int32 i = 0; i < NumSections; i++)
 			{
-				Mesh->SetVisibility(false);
-				Mesh->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
-				Mesh->SetCollisionResponseToAllChannels(ECR_Overlap);
-			}
-		}
-	}
-	// Clip entities: invisible, blocks player movement
-	else if (CN.Equals(TEXT("func_clip_vphysics"), ESearchCase::IgnoreCase) ||
-			 CN.Equals(TEXT("func_clip"), ESearchCase::IgnoreCase))
-	{
-		for (UProceduralMeshComponent* Mesh : BrushMeshes)
-		{
-			if (Mesh)
-			{
-				Mesh->SetVisibility(false);
-				Mesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-				Mesh->SetCollisionResponseToAllChannels(ECR_Block);
-			}
-		}
-	}
-	// Illusionary: visible but no collision (walk through)
-	else if (CN.Equals(TEXT("func_illusionary"), ESearchCase::IgnoreCase))
-	{
-		for (UProceduralMeshComponent* Mesh : BrushMeshes)
-		{
-			if (Mesh)
-			{
-				Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-			}
-		}
-	}
-	// func_wall: check rendermode keyvalue — if non-zero, it's invisible at runtime
-	else if (CN.Equals(TEXT("func_wall"), ESearchCase::IgnoreCase) ||
-			 CN.Equals(TEXT("func_wall_toggle"), ESearchCase::IgnoreCase))
-	{
-		const FString* RenderMode = KeyValues.Find(TEXT("rendermode"));
-		if (RenderMode && FCString::Atoi(**RenderMode) != 0)
-		{
-			// Non-default rendermode — entity may be invisible or translucent
-			int32 Mode = FCString::Atoi(**RenderMode);
-			if (Mode == 10) // Don't render
-			{
-				for (UProceduralMeshComponent* Mesh : BrushMeshes)
+				UMaterialInterface* Mat = Mesh->GetMaterial(i);
+				if (Mat)
 				{
-					if (Mesh) Mesh->SetVisibility(false);
+					FString MatName = Mat->GetName();
+					// Tool textures from import are named like M_TOOLS_TOOLSTRIGGER, M_TOOLS_TOOLSNODRAW, etc.
+					if (!MatName.Contains(TEXT("TOOLS"), ESearchCase::IgnoreCase))
+					{
+						bAllToolTextures = false;
+						break;
+					}
 				}
 			}
+
+			if (bAllToolTextures)
+			{
+				Mesh->SetVisibility(false);
+			}
+		}
+
+		// --- Collision: driven by entity classname (entity behavior) ---
+		if (bIsTrigger)
+		{
+			Mesh->SetCollisionEnabled(ECollisionEnabled::QueryOnly);
+			Mesh->SetCollisionResponseToAllChannels(ECR_Overlap);
+		}
+		else if (bIsClip)
+		{
+			Mesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+			Mesh->SetCollisionResponseToAllChannels(ECR_Block);
+		}
+		else if (bIsIllusionary)
+		{
+			Mesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 		}
 	}
-	// func_detail, func_breakable, func_brush, etc.: normal (visible + solid)
-	// No changes needed — default behavior is correct
+
+	// func_wall with rendermode 10 (Don't render) — hide regardless of materials
+	if (CN.Equals(TEXT("func_wall"), ESearchCase::IgnoreCase) ||
+		CN.Equals(TEXT("func_wall_toggle"), ESearchCase::IgnoreCase))
+	{
+		const FString* RenderMode = KeyValues.Find(TEXT("rendermode"));
+		if (RenderMode && FCString::Atoi(**RenderMode) == 10)
+		{
+			for (UProceduralMeshComponent* Mesh : BrushMeshes)
+			{
+				if (Mesh) Mesh->SetVisibility(false);
+			}
+		}
+	}
 }
 
 // ---- Env Sprite ----
