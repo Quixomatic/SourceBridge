@@ -51,7 +51,6 @@ public:
 		const TArray<TArray<FVector>>& FaceVertices,
 		float Tolerance = 1.0f);
 
-private:
 	/**
 	 * Pick 3 non-collinear points from a vertex array for VMF plane definition.
 	 * Returns false if all points are collinear (degenerate face).

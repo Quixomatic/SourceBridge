@@ -36,4 +36,12 @@ private:
 	static void OnImportVMF();
 	static void OnImportBSP();
 	static void OnOpenSettings();
+
+	/** Brush tools */
+	static void OnCreateSourceBrush();
+	static void OnTieToEntity();
+	static void OnMoveToWorldspawn();
+
+	/** Register context menu extensions for actors. */
+	static void RegisterActorContextMenu();
 };
