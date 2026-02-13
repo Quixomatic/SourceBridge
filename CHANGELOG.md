@@ -5,6 +5,64 @@ All notable changes to SourceBridge will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-02-12
+
+### Added
+
+#### Source → UE Import Pipeline (Phase 11)
+- VMF file parser and importer (geometry reconstruction via CSG plane clipping)
+- BSP import via bundled BSPSource decompiler (Java)
+- Material import with VMT parsing, reverse tool mapping, and placeholder generation
+- VTF texture reader for Source textures (DXT1/DXT3/DXT5/BGRA8/UV88)
+- VPK archive reader for stock game materials (hl2, cstrike, platform)
+- Masked and translucent material support (3-tier: opaque/masked/translucent)
+- Tool texture visualization with semi-transparent colored materials
+- Console commands: ImportVMF, ImportBSP
+
+#### MDL Model Import (Phase 12)
+- MDL/VVD/VTX binary reader for Source model files
+- Model import as UStaticMesh on ASourceProp actors
+- LOD, body group, and hitbox support
+- PHY collision data reader
+- Round-trip model export (import → re-export preserves data)
+- Custom model packaging in full export pipeline
+
+#### Brush Entity Parity (Phase 13)
+- ASourceBrushEntity class for brush-based entities (func_detail, triggers, etc.)
+- Full keyvalue, spawnflag, and I/O connection preservation on import
+- FGD-driven property editing for all brush entity types
+- Parent-child entity attachment (parentname support)
+- Round-trip export for brush entities with original plane/UV data
+
+#### Advanced Editor Tools (Phase 14)
+- Source I/O Node Graph Editor with auto-layout and bidirectional selection sync
+- Custom graph nodes with entity-colored title bars, FGD property widgets, and connection editing
+- Pin coloring (output=green, input=blue) and wire coloring by entity type
+- Wire tooltips showing connection details (output → target.input, delay, refire)
+- Jump-to-node navigation (select entity → graph pans to its node)
+- I/O connection parameter display and inline editing
+- Entity-specific editor sprites (lights, spawns, props, triggers)
+- PIE runtime with Source spawn points, first-person walking pawn, and noclip
+- Tool texture per-face hiding in PIE mode
+- SourceBridge GameMode for Play-In-Editor testing
+
+### Fixed
+- VMF plane winding for correct front-face rendering on import
+- UV computation for imported brush textures
+- Material rendering using Material Instance Dynamic instead of per-material UMaterial
+- VPK archives being wiped during BSP import cache clear
+- VMT parser handling unquoted keys/values and nested quoted strings (water materials)
+- Material search ordering (check VPK before recursive disk scan)
+- Large map import performance (progress bars, reduced logging)
+- MDL header offset bug causing model imports to fail
+- Source → UE rotation conversion for props
+- FGD parser stack overflow from circular inheritance
+- I/O graph showing wrong classnames during import (deferred rebuild)
+- I/O connections from BSPSource-decompiled VMFs using ESC (0x1b) separator
+
+### Changed
+- Release workflow now downloads and bundles BSPSource v1.4.7 automatically
+
 ## [1.0.1] - 2026-02-11
 
 ### Fixed
