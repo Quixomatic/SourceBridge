@@ -93,6 +93,9 @@ FFullExportResult FFullExportPipeline::RunWithProgress(
 		if (MapName.IsEmpty()) MapName = TEXT("export");
 	}
 
+	// Convert to absolute path so compile tools can find the files regardless of working directory
+	OutputDir = FPaths::ConvertRelativePathToFull(OutputDir);
+
 	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
 	PlatformFile.CreateDirectoryTree(*OutputDir);
 
