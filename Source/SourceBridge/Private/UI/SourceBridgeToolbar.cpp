@@ -128,6 +128,16 @@ void FSourceBridgeToolbar::Register()
 				);
 
 				MenuBuilder.AddMenuEntry(
+					LOCTEXT("MaterialBrowser", "Source Materials"),
+					LOCTEXT("MaterialBrowserTooltip", "Browse and apply Source engine materials (stock, imported, custom)"),
+					FSlateIcon(),
+					FUIAction(FExecuteAction::CreateLambda([]()
+					{
+						FGlobalTabmanager::Get()->TryInvokeTab(FName(TEXT("SourceMaterialBrowser")));
+					}))
+				);
+
+				MenuBuilder.AddMenuEntry(
 					LOCTEXT("Settings", "Export Settings..."),
 					LOCTEXT("SettingsTooltip", "Configure export settings (target game, output path, compile options)"),
 					FSlateIcon(),

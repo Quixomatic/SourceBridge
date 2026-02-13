@@ -84,6 +84,12 @@ public:
 	/** Get texture dimensions for a Source material path. Returns (512,512) if unknown. */
 	static FIntPoint GetTextureSize(const FString& SourceMaterialPath);
 
+	/** Get all stock material paths from loaded VPK archives (e.g. "concrete/concretefloor001a"). */
+	static TArray<FString> GetStockMaterialPaths();
+
+	/** Get all unique material directories from VPK archives (e.g. "materials/concrete"). */
+	static TArray<FString> GetStockMaterialDirectories();
+
 private:
 	/** Runtime pointer cache (Source path → loaded persistent UMaterialInterface*) */
 	static TMap<FString, UMaterialInterface*> MaterialCache;

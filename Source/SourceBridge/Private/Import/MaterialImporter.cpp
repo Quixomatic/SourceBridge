@@ -1224,6 +1224,66 @@ FIntPoint FMaterialImporter::GetTextureSize(const FString& SourceMaterialPath)
 	return FIntPoint(512, 512);
 }
 
+TArray<FString> FMaterialImporter::GetStockMaterialPaths()
+{
+	EnsureVPKArchivesLoaded();
+
+	TSet<FString> UniqueMatPaths;
+
+	for (const TSharedPtr<FVPKReader>& VPK : VPKArchives)
+	{
+		TArray<FString> VMTPaths = VPK->GetAllPaths(TEXT("vmt"));
+		for (const FString& VMTPath : VMTPaths)
+		{
+			// VPK paths look like "materials/concrete/concretefloor001a.vmt"
+			// Strip "materials/" prefix and ".vmt" suffix to get Source path
+			FString MatPath = VMTPath;
+			if (MatPath.StartsWith(TEXT("materials/")))
+			{
+				MatPath = MatPath.Mid(10);
+			}
+			if (MatPath.EndsWith(TEXT(".vmt")))
+			{
+				MatPath = MatPath.LeftChop(4);
+			}
+			UniqueMatPaths.Add(MatPath);
+		}
+	}
+
+	TArray<FString> Result = UniqueMatPaths.Array();
+	Result.Sort();
+	return Result;
+}
+
+TArray<FString> FMaterialImporter::GetStockMaterialDirectories()
+{
+	EnsureVPKArchivesLoaded();
+
+	TSet<FString> UniqueDirs;
+
+	for (const TSharedPtr<FVPKReader>& VPK : VPKArchives)
+	{
+		TArray<FString> Dirs = VPK->GetAllDirectories(TEXT("vmt"));
+		for (const FString& Dir : Dirs)
+		{
+			// Strip "materials/" prefix
+			FString CleanDir = Dir;
+			if (CleanDir.StartsWith(TEXT("materials/")))
+			{
+				CleanDir = CleanDir.Mid(10);
+			}
+			if (!CleanDir.IsEmpty())
+			{
+				UniqueDirs.Add(CleanDir);
+			}
+		}
+	}
+
+	TArray<FString> Result = UniqueDirs.Array();
+	Result.Sort();
+	return Result;
+}
+
 FLinearColor FMaterialImporter::ColorFromName(const FString& Name)
 {
 	uint32 Hash = GetTypeHash(Name.ToUpper());

@@ -299,3 +299,42 @@ void FVPKReader::LogEntriesMatching(const FString& Filter, int32 MaxCount) const
 		UE_LOG(LogTemp, Log, TEXT("VPKReader:   No entries matching '%s'"), *Filter);
 	}
 }
+
+TArray<FString> FVPKReader::GetAllPaths(const FString& Extension) const
+{
+	TArray<FString> Result;
+	FString Suffix = TEXT(".") + Extension.ToLower();
+
+	for (const auto& Pair : Entries)
+	{
+		if (Pair.Key.EndsWith(Suffix))
+		{
+			Result.Add(Pair.Key);
+		}
+	}
+
+	Result.Sort();
+	return Result;
+}
+
+TArray<FString> FVPKReader::GetAllDirectories(const FString& Extension) const
+{
+	TSet<FString> Dirs;
+	FString Suffix = TEXT(".") + Extension.ToLower();
+
+	for (const auto& Pair : Entries)
+	{
+		if (Pair.Key.EndsWith(Suffix))
+		{
+			int32 LastSlash;
+			if (Pair.Key.FindLastChar('/', LastSlash))
+			{
+				Dirs.Add(Pair.Key.Left(LastSlash));
+			}
+		}
+	}
+
+	TArray<FString> Result = Dirs.Array();
+	Result.Sort();
+	return Result;
+}

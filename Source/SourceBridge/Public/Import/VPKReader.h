@@ -32,6 +32,12 @@ public:
 	/** Log a sample of entries that match a filter. For debugging. */
 	void LogEntriesMatching(const FString& Filter, int32 MaxCount = 20) const;
 
+	/** Get all file paths matching a given extension (e.g. "vmt", "vtf"). Extension without dot. */
+	TArray<FString> GetAllPaths(const FString& Extension) const;
+
+	/** Get all unique directory paths containing files with the given extension. */
+	TArray<FString> GetAllDirectories(const FString& Extension) const;
+
 private:
 	struct FVPKEntry
 	{
