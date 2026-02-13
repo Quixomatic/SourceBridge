@@ -523,25 +523,21 @@ void ASourceBrushEntity::ReconstructFromStoredData()
 				TexSize = FMaterialImporter::GetTextureSize(MatPath);
 			}
 
-			// Compute face center and outward normal
-			FVector FaceCenter = FVector::ZeroVector;
-			for (const FVector& V : FaceVerts)
-			{
-				FVector UEPos(V.X * Scale, -V.Y * Scale, V.Z * Scale);
-				FaceCenter += UEPos - ActorCenter;
-			}
-			FaceCenter /= FaceVerts.Num();
+			// Get outward normal from stored plane definition (known correct)
+			// Planes[] contain inward-pointing normals (VMF convention: (P2-P1)×(P3-P1) points INWARD)
+			// Convert to UE space (negate Y) and negate for outward
+			FVector InwardSource(Planes[PlaneIdx].X, Planes[PlaneIdx].Y, Planes[PlaneIdx].Z);
+			FVector InwardUE(InwardSource.X, -InwardSource.Y, InwardSource.Z);
+			FVector OutwardNormal = -InwardUE;
+			if (!OutwardNormal.IsNearlyZero()) OutwardNormal.Normalize();
 
-			// Winding normal
+			// Determine winding flip by comparing vertex winding to outward normal
 			FVector V0(FaceVerts[0].X * Scale, -FaceVerts[0].Y * Scale, FaceVerts[0].Z * Scale);
 			FVector V1(FaceVerts[1].X * Scale, -FaceVerts[1].Y * Scale, FaceVerts[1].Z * Scale);
 			FVector V2(FaceVerts[2].X * Scale, -FaceVerts[2].Y * Scale, FaceVerts[2].Z * Scale);
 			V0 -= ActorCenter; V1 -= ActorCenter; V2 -= ActorCenter;
 			FVector WindingNormal = FVector::CrossProduct(V1 - V0, V2 - V0);
-			if (!WindingNormal.IsNearlyZero()) WindingNormal.Normalize();
-			bool bNormalPointsOutward = FVector::DotProduct(WindingNormal, FaceCenter) > 0.0f;
-			FVector OutwardNormal = bNormalPointsOutward ? WindingNormal : -WindingNormal;
-			bool bFlipWinding = bNormalPointsOutward;
+			bool bFlipWinding = FVector::DotProduct(WindingNormal, OutwardNormal) > 0.0f;
 
 			// Compute tangent from texture U axis (Source→UE: negate Y)
 			FVector UETangentDir(UAxes[PlaneIdx].X, -UAxes[PlaneIdx].Y, UAxes[PlaneIdx].Z);

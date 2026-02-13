@@ -466,6 +466,9 @@ UProceduralMeshComponent* FVMFImporter::BuildProceduralMesh(
 	ProcMesh->CreationMethod = EComponentCreationMethod::Instance;
 
 	// Resolve materials and compute normals for each face
+	// Use the known-correct VMF plane normals (FaceNormals) instead of centroid heuristic.
+	// VMF convention: plane normal = (P2-P1)×(P3-P1) points INWARD into the solid.
+	// So outward normal = -SourceDirToUE(FaceNormal)
 	struct FFaceData
 	{
 		UMaterialInterface* Material = nullptr;
@@ -494,28 +497,23 @@ UProceduralMeshComponent* FVMFImporter::BuildProceduralMesh(
 			}
 		}
 
-		// Compute face normal from vertices (in UE local space)
-		// and determine outward direction by checking dot with face center from actor center
-		FVector FaceCenter = FVector::ZeroVector;
-		for (const FVector& V : FaceVerts)
+		// Get outward normal from VMF plane definition (known correct)
+		// FaceNormals are in Source space, pointing INWARD → negate after UE conversion for outward
+		if (SideIdx < FaceNormals.Num())
 		{
-			FaceCenter += SourceToUE(V, Scale) - ActorCenter;
+			FVector InwardSource = FaceNormals[SideIdx];
+			FVector InwardUE = SourceDirToUE(InwardSource);
+			FD.OutwardNormal = -InwardUE;
+			if (!FD.OutwardNormal.IsNearlyZero()) FD.OutwardNormal.Normalize();
 		}
-		FaceCenter /= FaceVerts.Num();
 
-		// Compute winding normal
+		// Determine winding flip by comparing vertex winding to outward normal
 		FVector V0 = SourceToUE(FaceVerts[0], Scale) - ActorCenter;
 		FVector V1 = SourceToUE(FaceVerts[1], Scale) - ActorCenter;
 		FVector V2 = SourceToUE(FaceVerts[2], Scale) - ActorCenter;
 		FVector WindingNormal = FVector::CrossProduct(V1 - V0, V2 - V0);
-		if (!WindingNormal.IsNearlyZero())
-		{
-			WindingNormal.Normalize();
-		}
-
-		bool bNormalPointsOutward = FVector::DotProduct(WindingNormal, FaceCenter) > 0.0f;
-		FD.OutwardNormal = bNormalPointsOutward ? WindingNormal : -WindingNormal;
-		FD.bFlipWinding = bNormalPointsOutward;
+		// If winding normal opposes outward normal, flip the triangulation
+		FD.bFlipWinding = FVector::DotProduct(WindingNormal, FD.OutwardNormal) > 0.0f;
 	}
 
 	// Group faces by material into mesh sections
