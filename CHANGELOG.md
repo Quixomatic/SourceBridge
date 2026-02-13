@@ -5,6 +5,33 @@ All notable changes to SourceBridge will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-02-13
+
+### Added
+
+#### Map Authoring Workflow (Phase 15)
+- Per-face material editing for brush entities (select face, apply material from picker)
+- Brush entity spawning with default geometry (creates box brush on spawn)
+- Shape overrides for spawned brush entities (box, wedge, cylinder, arch)
+- Static mesh to brush conversion on export (convex decomposition)
+- Worldspawn brush creation and Tie to Entity tools
+- Export validation for brush entities and degenerate geometry
+
+#### Full Round-Trip Material Pipeline (Phase 16)
+- Central material manifest (USourceMaterialManifest UDataAsset) tracking all Source materials
+- Persistent texture import: VTF decoded to UTexture2D assets (survive editor restart)
+- Persistent material import: UMaterialInstanceConstant assets with proper base materials
+- Manifest-first material mapping on export (correct Source paths, no more broken name-based mapping)
+- MaterialAnalyzer: extracts textures, blend mode, two-sided flag from arbitrary UE materials
+- Custom UE material export: TGA → VTF conversion with DXT1/DXT5 format selection and mipmaps
+- VMT generation from material analysis (maps UE properties to Source VMT parameters)
+- Lossless re-export of imported materials using stored VMT params from manifest
+- Custom material files automatically packed into BSP via bspzip
+
+### Fixed
+- Compile pipeline failing on relative VMF paths (now converts to absolute)
+- Spawn validation failing on imported maps
+
 ## [1.1.0] - 2026-02-12
 
 ### Added
