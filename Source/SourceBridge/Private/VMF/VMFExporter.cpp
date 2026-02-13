@@ -6,6 +6,7 @@
 #include "Entities/PropExporter.h"
 #include "Materials/MaterialMapper.h"
 #include "Utilities/SourceCoord.h"
+#include "Actors/SourceEntityActor.h"
 #include "Engine/Brush.h"
 #include "Engine/World.h"
 #include "Engine/TriggerVolume.h"
@@ -197,6 +198,40 @@ FString FVMFExporter::ExportScene(UWorld* World)
 		}
 	}
 
+	// Collect static mesh actors tagged for brush conversion (source:worldspawn, source:func_detail, etc.)
+	int32 MeshBrushCount = 0;
+	TArray<FMeshToBrushResult> MeshBrushes = FPropExporter::CollectMeshBrushes(
+		World, SolidIdCounter, SideIdCounter);
+	for (FMeshToBrushResult& MBR : MeshBrushes)
+	{
+		if (MBR.EntityClass.IsEmpty())
+		{
+			// Worldspawn — add solids to world node
+			for (FVMFKeyValues& Solid : MBR.Solids)
+			{
+				WorldNode.Children.Add(MoveTemp(Solid));
+				BrushCount++;
+				MeshBrushCount++;
+			}
+		}
+		else
+		{
+			// Brush entity (func_detail, etc.) — create entity block
+			FVMFKeyValues MeshEntity(TEXT("entity"));
+			MeshEntity.AddProperty(TEXT("id"), SolidIdCounter++);
+			MeshEntity.AddProperty(TEXT("classname"), MBR.EntityClass);
+
+			for (FVMFKeyValues& Solid : MBR.Solids)
+			{
+				MeshEntity.Children.Add(MoveTemp(Solid));
+				BrushCount++;
+				MeshBrushCount++;
+			}
+
+			BrushEntities.Add(MoveTemp(MeshEntity));
+		}
+	}
+
 	// Add hint/skip brushes to worldspawn (visibility optimization)
 	TArray<FVMFKeyValues> HintBrushes = FVisOptimizer::ExportHintBrushes(
 		World, SolidIdCounter, SideIdCounter);
@@ -253,8 +288,8 @@ FString FVMFExporter::ExportScene(UWorld* World)
 	Result += BuildCameras().Serialize();
 	Result += BuildCordon().Serialize();
 
-	UE_LOG(LogTemp, Log, TEXT("SourceBridge: Exported %d brushes (%d skipped), %d brush entities, %d entities, %d props to VMF."),
-		BrushCount, SkippedCount, BrushEntities.Num(), EntityResult.Entities.Num(), PropEntities.Num());
+	UE_LOG(LogTemp, Log, TEXT("SourceBridge: Exported %d brushes (%d from meshes, %d skipped), %d brush entities, %d entities, %d props to VMF."),
+		BrushCount, MeshBrushCount, SkippedCount, BrushEntities.Num(), EntityResult.Entities.Num(), PropEntities.Num());
 
 	return Result;
 }
@@ -514,10 +549,19 @@ void FVMFExporter::ExportBrushEntities(
 		}
 
 		AActor* Actor = Entity.SourceActor.Get();
+
+		// Handle ASourceBrushEntity (palette-spawned and imported brush entities)
+		ASourceBrushEntity* SourceBrush = Cast<ASourceBrushEntity>(Actor);
+		if (SourceBrush && SourceBrush->StoredBrushData.Num() > 0)
+		{
+			Result += FEntityExporter::BrushEntityToVMF(Entity, EntityIdCounter++, SourceBrush).Serialize();
+			continue;
+		}
+
 		ABrush* BrushActor = Cast<ABrush>(Actor);
 		if (!BrushActor)
 		{
-			// Non-brush actor tagged as brush entity (shouldn't happen, but fallback to point entity)
+			// Non-brush actor tagged as brush entity — fallback to point entity
 			Result += FEntityExporter::EntityToVMF(Entity, EntityIdCounter++).Serialize();
 			continue;
 		}

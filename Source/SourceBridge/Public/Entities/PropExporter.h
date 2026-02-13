@@ -51,11 +51,31 @@ struct FPropExportSettings
  * - "skin:N" - model skin index
  * - "solid:N" - collision type (0=not solid, 2=BSP, 6=VPhysics)
  */
+/**
+ * Result of attempting to convert a static mesh to brush geometry.
+ */
+struct FMeshToBrushResult
+{
+	/** True if the mesh was successfully converted to brush geometry. */
+	bool bSuccess = false;
+
+	/** VMF solid nodes for this mesh. */
+	TArray<FVMFKeyValues> Solids;
+
+	/** Entity classname (empty = worldspawn, "func_detail" etc.) */
+	FString EntityClass;
+
+	/** Warnings generated during conversion. */
+	TArray<FString> Warnings;
+};
+
 class SOURCEBRIDGE_API FPropExporter
 {
 public:
 	/**
 	 * Export all static mesh actors from a world as prop entities.
+	 * Actors tagged source:worldspawn or source:func_detail are skipped here
+	 * (handled by CollectMeshBrushes instead).
 	 */
 	static TArray<FVMFKeyValues> ExportProps(
 		UWorld* World,
@@ -70,6 +90,32 @@ public:
 		int32 EntityId,
 		const FPropExportSettings& Settings);
 
+	/**
+	 * Collect all static mesh actors that should be exported as brush geometry.
+	 * Handles source:worldspawn, source:func_detail tags and auto-detection.
+	 */
+	static TArray<FMeshToBrushResult> CollectMeshBrushes(
+		UWorld* World,
+		int32& SolidIdCounter,
+		int32& SideIdCounter);
+
+	/**
+	 * Try to convert a static mesh actor to VMF brush solids.
+	 * Returns success if the mesh is convex with reasonable face count.
+	 */
+	static FMeshToBrushResult ConvertMeshToBrush(
+		AStaticMeshActor* Actor,
+		int32& SolidIdCounter,
+		int32& SideIdCounter,
+		const FString& ForcedEntityClass = FString());
+
+	/**
+	 * Check if a static mesh actor should be exported as brush geometry.
+	 * Returns the entity class ("" for worldspawn, "func_detail" etc.)
+	 * or empty optional if it should remain a prop.
+	 */
+	static TOptional<FString> ShouldConvertToBrush(AStaticMeshActor* Actor);
+
 private:
 	/** Determine the export mode from actor tags. */
 	static EPropExportMode GetExportMode(AStaticMeshActor* Actor, EPropExportMode Default);
@@ -79,4 +125,24 @@ private:
 
 	/** Get a classname string from export mode. */
 	static FString GetClassname(EPropExportMode Mode);
+
+	/**
+	 * Extract face planes from a triangle mesh by merging coplanar triangles.
+	 * Returns an array of face data: normal + polygon vertices.
+	 */
+	struct FMeshFace
+	{
+		FVector Normal;
+		TArray<FVector> Vertices; // Polygon vertices in winding order
+		FString Material;
+	};
+
+	static TArray<FMeshFace> ExtractFaces(
+		const TArray<FVector>& Vertices,
+		const TArray<uint32>& Indices,
+		const TArray<int32>& MaterialIds,
+		const TArray<FString>& MaterialNames);
+
+	/** Check if a mesh is convex (all faces' normals point outward consistently). */
+	static bool IsMeshConvex(const TArray<FMeshFace>& Faces);
 };

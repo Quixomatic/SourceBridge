@@ -22,6 +22,12 @@ FVector FSourceCoord::SourceToUE(const FVector& SourcePos)
 	);
 }
 
+FVector FSourceCoord::UEToSourceDirection(const FVector& UEDir)
+{
+	// Direction only: negate Y for handedness flip, no scaling
+	return FVector(UEDir.X, -UEDir.Y, UEDir.Z);
+}
+
 FString FSourceCoord::UERotationToSourceAngles(const FRotator& UERot)
 {
 	// Source angles: pitch yaw roll

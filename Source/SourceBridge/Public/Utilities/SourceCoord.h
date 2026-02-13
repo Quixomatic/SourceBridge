@@ -21,6 +21,9 @@ struct SOURCEBRIDGE_API FSourceCoord
 	/** Convert a Source position to UE position */
 	static FVector SourceToUE(const FVector& SourcePos);
 
+	/** Convert a UE direction vector to Source direction (negate Y, no scaling) */
+	static FVector UEToSourceDirection(const FVector& UEDir);
+
 	/** Convert a UE rotation (FRotator) to Source angles string "pitch yaw roll" */
 	static FString UERotationToSourceAngles(const FRotator& UERot);
 
