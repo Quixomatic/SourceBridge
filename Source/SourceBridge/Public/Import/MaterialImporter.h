@@ -146,10 +146,14 @@ private:
 	/** Get or create the persistent color base material (for placeholders). */
 	static UMaterial* GetOrCreateColorBaseMaterial();
 
+	/** Get or create the persistent tool texture base material (Unlit + Translucent). */
+	static UMaterial* GetOrCreateToolBaseMaterial();
+
 	static UMaterial* CachedOpaqueMaterial;
 	static UMaterial* CachedMaskedMaterial;
 	static UMaterial* CachedTranslucentMaterial;
 	static UMaterial* CachedColorMaterial;
+	static UMaterial* CachedToolMaterial;
 
 	// ---- VTF Loading ----
 

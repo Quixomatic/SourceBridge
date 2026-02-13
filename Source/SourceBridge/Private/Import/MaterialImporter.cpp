@@ -36,6 +36,7 @@ UMaterial* FMaterialImporter::CachedOpaqueMaterial = nullptr;
 UMaterial* FMaterialImporter::CachedMaskedMaterial = nullptr;
 UMaterial* FMaterialImporter::CachedTranslucentMaterial = nullptr;
 UMaterial* FMaterialImporter::CachedColorMaterial = nullptr;
+UMaterial* FMaterialImporter::CachedToolMaterial = nullptr;
 
 // ===========================================================================
 // VMT Parsing (unchanged from original)
@@ -712,7 +713,9 @@ UMaterialInterface* FMaterialImporter::CreatePlaceholderMaterial(const FString& 
 	FString Upper = SourceMaterialPath.ToUpper();
 
 	FLinearColor Color;
-	if (Upper.StartsWith(TEXT("TOOLS/")))
+	bool bIsToolTexture = Upper.StartsWith(TEXT("TOOLS/"));
+
+	if (bIsToolTexture)
 	{
 		if (Upper.Contains(TEXT("NODRAW")))
 			Color = FLinearColor(0.8f, 0.3f, 0.3f);
@@ -744,7 +747,53 @@ UMaterialInterface* FMaterialImporter::CreatePlaceholderMaterial(const FString& 
 		Color = ColorFromName(SourceMaterialPath);
 	}
 
-	UMaterialInstanceConstant* MIC = CreatePersistentColorMaterial(Color, SourceMaterialPath);
+	UMaterialInstanceConstant* MIC = nullptr;
+
+	if (bIsToolTexture)
+	{
+		// TOOLS materials use Unlit + Translucent base so they don't block light
+		// or interact with the lighting system (matching VBSP behavior where they're stripped)
+		FString AssetPath = SourcePathToAssetPath(TEXT("Materials"), SourceMaterialPath);
+		FString AssetName = FPaths::GetCleanFilename(AssetPath);
+		FString FullObjectPath = AssetPath + TEXT(".") + AssetName;
+
+		MIC = LoadObject<UMaterialInstanceConstant>(nullptr, *FullObjectPath);
+		if (!MIC)
+		{
+			UMaterial* ToolParent = GetOrCreateToolBaseMaterial();
+			if (ToolParent)
+			{
+				UPackage* Package = CreatePackage(*AssetPath);
+				if (Package)
+				{
+					MIC = NewObject<UMaterialInstanceConstant>(Package, *AssetName, RF_Public | RF_Standalone);
+					if (MIC)
+					{
+						MIC->Parent = ToolParent;
+
+						FVectorParameterValue& ColorParam = MIC->VectorParameterValues.AddDefaulted_GetRef();
+						ColorParam.ParameterInfo.Name = FName(TEXT("Color"));
+						ColorParam.ParameterValue = Color;
+
+						FScalarParameterValue& OpacityParam = MIC->ScalarParameterValues.AddDefaulted_GetRef();
+						OpacityParam.ParameterInfo.Name = FName(TEXT("Opacity"));
+						OpacityParam.ParameterValue = 0.3f;
+
+						MIC->PreEditChange(nullptr);
+						MIC->PostEditChange();
+
+						Package->MarkPackageDirty();
+						FAssetRegistryModule::AssetCreated(MIC);
+						SaveAsset(MIC);
+					}
+				}
+			}
+		}
+	}
+	else
+	{
+		MIC = CreatePersistentColorMaterial(Color, SourceMaterialPath);
+	}
 
 	// Register placeholder in manifest
 	if (MIC)
@@ -1114,6 +1163,63 @@ UMaterial* FMaterialImporter::GetOrCreateColorBaseMaterial()
 
 	CachedColorMaterial = Mat;
 	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Created persistent color base material"));
+	return Mat;
+}
+
+UMaterial* FMaterialImporter::GetOrCreateToolBaseMaterial()
+{
+	if (CachedToolMaterial && CachedToolMaterial->IsValidLowLevel())
+	{
+		return CachedToolMaterial;
+	}
+
+	FString MaterialName = TEXT("M_SourceBridge_Tool");
+	FString AssetPath = FString::Printf(TEXT("/Game/SourceBridge/BaseMaterials/%s"), *MaterialName);
+	FString FullObjectPath = AssetPath + TEXT(".") + MaterialName;
+
+	UMaterial* Mat = LoadObject<UMaterial>(nullptr, *FullObjectPath);
+	if (Mat)
+	{
+		CachedToolMaterial = Mat;
+		return Mat;
+	}
+
+	UPackage* Package = CreatePackage(*AssetPath);
+	if (!Package) return nullptr;
+
+	Mat = NewObject<UMaterial>(Package, *MaterialName, RF_Public | RF_Standalone);
+	if (!Mat) return nullptr;
+
+	// Unlit + Translucent: visible as colored overlay but doesn't block light
+	// or interact with lighting (matches Source engine where VBSP strips tool faces)
+	Mat->SetShadingModel(MSM_Unlit);
+	Mat->BlendMode = BLEND_Translucent;
+
+	// Emissive color from parameter (Unlit uses EmissiveColor, not BaseColor)
+	UMaterialExpressionVectorParameter* ColorParam =
+		NewObject<UMaterialExpressionVectorParameter>(Mat);
+	ColorParam->ParameterName = FName(TEXT("Color"));
+	ColorParam->DefaultValue = FLinearColor(0.5f, 0.5f, 0.5f);
+	Mat->GetExpressionCollection().AddExpression(ColorParam);
+	Mat->GetEditorOnlyData()->EmissiveColor.Connect(0, ColorParam);
+
+	// Opacity from parameter (semi-transparent so you can see through)
+	UMaterialExpressionScalarParameter* OpacityParam =
+		NewObject<UMaterialExpressionScalarParameter>(Mat);
+	OpacityParam->ParameterName = FName(TEXT("Opacity"));
+	OpacityParam->DefaultValue = 0.3f;
+	Mat->GetExpressionCollection().AddExpression(OpacityParam);
+	Mat->GetEditorOnlyData()->Opacity.Connect(0, OpacityParam);
+
+	Mat->PreEditChange(nullptr);
+	Mat->PostEditChange();
+
+	Package->MarkPackageDirty();
+	FAssetRegistryModule::AssetCreated(Mat);
+	SaveAsset(Mat);
+
+	CachedToolMaterial = Mat;
+	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Created persistent tool base material (Unlit+Translucent)"));
 	return Mat;
 }
 
