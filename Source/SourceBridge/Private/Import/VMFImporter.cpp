@@ -616,6 +616,33 @@ UProceduralMeshComponent* FVMFImporter::BuildProceduralMesh(
 		}
 	}
 
+	// Check if ALL faces use TOOLS textures — if so, make this mesh invisible to lighting
+	bool bAllToolTextures = true;
+	for (int32 FaceIdx = 0; FaceIdx < FaceDataArray.Num(); FaceIdx++)
+	{
+		const FFaceData& FD = FaceDataArray[FaceIdx];
+		if (FD.Side && !FD.Side->Material.IsEmpty())
+		{
+			if (!FD.Side->Material.ToUpper().StartsWith(TEXT("TOOLS/")))
+			{
+				bAllToolTextures = false;
+				break;
+			}
+		}
+		else
+		{
+			bAllToolTextures = false;
+			break;
+		}
+	}
+
+	if (bAllToolTextures)
+	{
+		ProcMesh->SetCastShadow(false);
+		ProcMesh->bAffectDistanceFieldLighting = false;
+		ProcMesh->bAffectDynamicIndirectLighting = false;
+	}
+
 	ProcMesh->RegisterComponent();
 	return ProcMesh;
 }

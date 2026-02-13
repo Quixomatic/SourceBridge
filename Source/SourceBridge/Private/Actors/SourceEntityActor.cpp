@@ -590,6 +590,24 @@ void ASourceBrushEntity::ReconstructFromStoredData()
 			}
 		}
 
+		// Check if ALL faces use TOOLS textures — if so, make invisible to lighting
+		bool bAllToolTextures = (Materials.Num() > 0);
+		for (const FString& MatPath : Materials)
+		{
+			if (MatPath.IsEmpty() || !MatPath.ToUpper().StartsWith(TEXT("TOOLS/")))
+			{
+				bAllToolTextures = false;
+				break;
+			}
+		}
+
+		if (bAllToolTextures)
+		{
+			ProcMesh->SetCastShadow(false);
+			ProcMesh->bAffectDistanceFieldLighting = false;
+			ProcMesh->bAffectDynamicIndirectLighting = false;
+		}
+
 		ProcMesh->RegisterComponent();
 		BrushMeshes.Add(ProcMesh);
 	}
