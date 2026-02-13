@@ -777,7 +777,7 @@ UMaterialInterface* FMaterialImporter::CreatePlaceholderMaterial(const FString& 
 
 						FScalarParameterValue& OpacityParam = MIC->ScalarParameterValues.AddDefaulted_GetRef();
 						OpacityParam.ParameterInfo.Name = FName(TEXT("Opacity"));
-						OpacityParam.ParameterValue = 0.3f;
+						OpacityParam.ParameterValue = 1.0f;
 
 						MIC->PreEditChange(nullptr);
 						MIC->PostEditChange();
@@ -1203,11 +1203,12 @@ UMaterial* FMaterialImporter::GetOrCreateToolBaseMaterial()
 	Mat->GetExpressionCollection().AddExpression(ColorParam);
 	Mat->GetEditorOnlyData()->EmissiveColor.Connect(0, ColorParam);
 
-	// Opacity from parameter (semi-transparent so you can see through)
+	// Opacity = 1.0 (fully visible) — Translucent blend mode lets light pass through
+	// for Lumen GI without needing visual transparency
 	UMaterialExpressionScalarParameter* OpacityParam =
 		NewObject<UMaterialExpressionScalarParameter>(Mat);
 	OpacityParam->ParameterName = FName(TEXT("Opacity"));
-	OpacityParam->DefaultValue = 0.3f;
+	OpacityParam->DefaultValue = 1.0f;
 	Mat->GetExpressionCollection().AddExpression(OpacityParam);
 	Mat->GetEditorOnlyData()->Opacity.Connect(0, OpacityParam);
 
