@@ -143,18 +143,6 @@ FVMFImportResult FVMFImporter::ImportBlocks(const TArray<FVMFKeyValues>& Blocks,
 		}
 	}
 
-	// Rebuild BSP after all brushes are imported so BSP rendering works correctly
-	if (Result.BrushesImported > 0 && GEditor)
-	{
-		GEditor->csgRebuild(World);
-		ULevel* Level = World->GetCurrentLevel();
-		if (Level)
-		{
-			World->InvalidateModelGeometry(Level);
-			Level->UpdateModelComponents();
-		}
-	}
-
 	// Resolve parentname relationships after all entities are spawned
 	ResolveParentNames(Result);
 
