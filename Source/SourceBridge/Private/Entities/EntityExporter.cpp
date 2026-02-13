@@ -686,15 +686,9 @@ FVMFKeyValues FEntityExporter::BrushEntityToVMF(const FSourceEntity& Entity, int
 		Node.AddProperty(TEXT("targetname"), Entity.TargetName);
 	}
 
-	// Origin in Source coordinates
-	FVector SourceOrigin = FSourceCoord::UEToSource(Entity.Origin);
-	Node.AddProperty(TEXT("origin"), FSourceCoord::FormatVector(SourceOrigin));
-
-	// Angles
-	FString AnglesStr = FSourceCoord::UERotationToSourceAngles(Entity.Angles);
-	Node.AddProperty(TEXT("angles"), AnglesStr);
-
-	// Additional key-values
+	// Write stored key-values (includes origin/angles only if the original entity had them).
+	// Brush entities like func_detail do NOT have origin — their geometry planes are in world space.
+	// Movable brush entities like triggers DO have origin stored in their keyvalues from import.
 	for (const auto& KV : Entity.KeyValues)
 	{
 		Node.AddProperty(KV.Key, KV.Value);
