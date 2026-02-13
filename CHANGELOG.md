@@ -5,6 +5,23 @@ All notable changes to SourceBridge will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] - 2026-02-13
+
+### Fixed
+- Blue tint in Lit mode caused by TOOLS textures blocking light (NODRAW, CLIP, TRIGGER, SKYBOX, etc.)
+- TOOLS-only meshes now have shadow casting and distance field lighting disabled at the component level
+- TOOLS materials switched to Unlit+Translucent base so they don't interact with the lighting system
+- Lit mode normals using broken centroid heuristic replaced with VMF plane normals (import and reload paths)
+- Base materials missing Roughness=1.0 and Metallic=0.0 causing specular blue sky reflections
+- Missing tangent data on imported proc mesh sections causing flat shading in Lit mode
+- Save/reload persistence for props (UStaticMesh) and worldspawn brushes (StoredBrushData + PostLoad reconstruction)
+- Texture z-fighting caused by csgRebuild running after import
+- Texture sizes not reloading correctly on re-import
+
+### Added
+- Source Material Browser panel with texture preview thumbnails
+- Persistent material and texture re-import on subsequent loads
+
 ## [1.1.1] - 2026-02-13
 
 ### Added
