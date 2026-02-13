@@ -236,6 +236,66 @@ FString FVMFExporter::ExportScene(UWorld* World, const FString& MapName, TSet<FS
 		}
 	}
 
+	// Inject worldspawn solids from imported ASourceBrushEntity actors (StoredBrushData)
+	// These must go inside the worldspawn "world" block, NOT as separate entities
+	int32 WorldspawnBrushCount = 0;
+	TSet<FString> WorldspawnMaterialPaths;
+	for (TActorIterator<ASourceBrushEntity> It(World); It; ++It)
+	{
+		ASourceBrushEntity* BrushEntity = *It;
+		if (!BrushEntity) continue;
+		if (BrushEntity->SourceClassname != TEXT("worldspawn")) continue;
+		if (BrushEntity->StoredBrushData.Num() == 0) continue;
+
+		for (const FImportedBrushData& BrushData : BrushEntity->StoredBrushData)
+		{
+			FVMFKeyValues SolidNode(TEXT("solid"));
+			SolidNode.AddProperty(TEXT("id"), BrushData.SolidId > 0 ? BrushData.SolidId : SolidIdCounter++);
+
+			for (const FImportedSideData& Side : BrushData.Sides)
+			{
+				FVMFKeyValues SideNode(TEXT("side"));
+				SideNode.AddProperty(TEXT("id"), SideIdCounter++);
+
+				FString PlaneStr = FString::Printf(TEXT("(%g %g %g) (%g %g %g) (%g %g %g)"),
+					Side.PlaneP1.X, Side.PlaneP1.Y, Side.PlaneP1.Z,
+					Side.PlaneP2.X, Side.PlaneP2.Y, Side.PlaneP2.Z,
+					Side.PlaneP3.X, Side.PlaneP3.Y, Side.PlaneP3.Z);
+				SideNode.AddProperty(TEXT("plane"), PlaneStr);
+				SideNode.AddProperty(TEXT("material"), Side.Material);
+
+				if (!Side.UAxisStr.IsEmpty())
+				{
+					SideNode.AddProperty(TEXT("uaxis"), Side.UAxisStr);
+				}
+				if (!Side.VAxisStr.IsEmpty())
+				{
+					SideNode.AddProperty(TEXT("vaxis"), Side.VAxisStr);
+				}
+
+				SideNode.AddProperty(TEXT("rotation"), 0);
+				SideNode.AddProperty(TEXT("lightmapscale"), FString::FromInt(Side.LightmapScale));
+				SideNode.AddProperty(TEXT("smoothing_groups"), 0);
+
+				SolidNode.Children.Add(MoveTemp(SideNode));
+
+				if (!Side.Material.IsEmpty())
+				{
+					WorldspawnMaterialPaths.Add(Side.Material);
+				}
+			}
+
+			WorldNode.Children.Add(MoveTemp(SolidNode));
+			BrushCount++;
+			WorldspawnBrushCount++;
+		}
+	}
+
+	if (WorldspawnBrushCount > 0)
+	{
+		UE_LOG(LogTemp, Log, TEXT("SourceBridge: Injected %d worldspawn solids from ASourceBrushEntity actors."), WorldspawnBrushCount);
+	}
+
 	// Add hint/skip brushes to worldspawn (visibility optimization)
 	TArray<FVMFKeyValues> HintBrushes = FVisOptimizer::ExportHintBrushes(
 		World, SolidIdCounter, SideIdCounter);
@@ -299,6 +359,8 @@ FString FVMFExporter::ExportScene(UWorld* World, const FString& MapName, TSet<FS
 	if (OutUsedMaterials)
 	{
 		*OutUsedMaterials = MatMapper.GetUsedPaths();
+		// Include material paths from worldspawn StoredBrushData solids
+		OutUsedMaterials->Append(WorldspawnMaterialPaths);
 		UE_LOG(LogTemp, Log, TEXT("SourceBridge: %d unique material paths used in export."), OutUsedMaterials->Num());
 	}
 
@@ -554,6 +616,12 @@ void FVMFExporter::ExportBrushEntities(
 {
 	for (const FSourceEntity& Entity : Entities)
 	{
+		// Worldspawn solids are injected directly into the world block — skip here
+		if (Entity.ClassName == TEXT("worldspawn"))
+		{
+			continue;
+		}
+
 		if (!Entity.bIsBrushEntity || !Entity.SourceActor.IsValid())
 		{
 			continue;

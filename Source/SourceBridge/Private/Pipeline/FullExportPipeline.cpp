@@ -82,12 +82,6 @@ FFullExportResult FFullExportPipeline::RunWithProgress(
 	}
 
 	// ---- Step 2: Set up output paths ----
-	FString OutputDir = Settings.OutputDir;
-	if (OutputDir.IsEmpty())
-	{
-		OutputDir = FPaths::ProjectSavedDir() / TEXT("SourceBridge");
-	}
-
 	FString MapName = Settings.MapName;
 	if (MapName.IsEmpty())
 	{
@@ -98,11 +92,24 @@ FFullExportResult FFullExportPipeline::RunWithProgress(
 		if (MapName.IsEmpty()) MapName = TEXT("export");
 	}
 
+	FString OutputDir = Settings.OutputDir;
+	if (OutputDir.IsEmpty())
+	{
+		// Default: Export/<MapName>/ with all assets alongside the VMF
+		OutputDir = FPaths::ProjectSavedDir() / TEXT("SourceBridge") / TEXT("Export") / MapName;
+	}
+
 	// Convert to absolute path so compile tools can find the files regardless of working directory
 	OutputDir = FPaths::ConvertRelativePathToFull(OutputDir);
 
 	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
 	PlatformFile.CreateDirectoryTree(*OutputDir);
+
+	// Create standard Source content subdirectories
+	PlatformFile.CreateDirectoryTree(*(OutputDir / TEXT("materials")));
+	PlatformFile.CreateDirectoryTree(*(OutputDir / TEXT("models")));
+	PlatformFile.CreateDirectoryTree(*(OutputDir / TEXT("resource")));
+	PlatformFile.CreateDirectoryTree(*(OutputDir / TEXT("sound")));
 
 	Result.VMFPath = OutputDir / MapName + TEXT(".vmf");
 
