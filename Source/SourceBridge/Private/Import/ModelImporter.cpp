@@ -6,6 +6,9 @@
 #include "MeshDescription.h"
 #include "StaticMeshAttributes.h"
 #include "Misc/Paths.h"
+#include "Misc/PackageName.h"
+#include "UObject/Package.h"
+#include "UObject/SavePackage.h"
 #include "HAL/PlatformFileManager.h"
 
 // Static member initialization
@@ -421,12 +424,28 @@ UStaticMesh* FModelImporter::CreateStaticMesh(const FSourceModelData& ModelData,
 	// Resolve materials
 	TArray<UMaterialInterface*> Materials = ResolveMaterials(ModelData, SkinIndex);
 
-	// Create mesh name from source path
-	FString MeshName = FPaths::GetBaseFilename(SourceModelPath);
-	MeshName = TEXT("SM_Import_") + MeshName;
+	// Create asset path from source model path: /Game/SourceBridge/Models/<path>
+	FString CleanPath = SourceModelPath.ToLower();
+	CleanPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+	CleanPath.RemoveFromStart(TEXT("models/"));
+	// Remove .mdl extension for asset name
+	CleanPath = FPaths::GetPath(CleanPath) / FPaths::GetBaseFilename(CleanPath);
+	CleanPath = CleanPath.Replace(TEXT(" "), TEXT("_"));
 
-	// Create the static mesh in transient package
-	UStaticMesh* StaticMesh = NewObject<UStaticMesh>(GetTransientPackage(), *MeshName, RF_Transient);
+	FString AssetPath = FString::Printf(TEXT("/Game/SourceBridge/Models/%s"), *CleanPath);
+	FString AssetName = FPaths::GetCleanFilename(AssetPath);
+	FString MeshName = TEXT("SM_") + AssetName;
+
+	// Create persistent package
+	UPackage* Package = CreatePackage(*AssetPath);
+	if (!Package)
+	{
+		UE_LOG(LogTemp, Error, TEXT("ModelImporter: Failed to create package for model: %s"), *AssetPath);
+		return nullptr;
+	}
+	Package->FullyLoad();
+
+	UStaticMesh* StaticMesh = NewObject<UStaticMesh>(Package, *AssetName, RF_Public | RF_Standalone);
 	if (!StaticMesh)
 	{
 		UE_LOG(LogTemp, Error, TEXT("ModelImporter: Failed to create UStaticMesh for '%s'"), *SourceModelPath);
@@ -656,8 +675,22 @@ UStaticMesh* FModelImporter::CreateStaticMesh(const FSourceModelData& ModelData,
 	BuildParams.bFastBuild = true;
 	StaticMesh->BuildFromMeshDescriptions(MeshDescPtrs, BuildParams);
 
-	UE_LOG(LogTemp, Log, TEXT("ModelImporter: Created UStaticMesh '%s' (%d verts, %d tris, %d materials, %d LODs)"),
-		*MeshName, ModelData.Vertices.Num(), TotalTris, Materials.Num(), LODMeshDescs.Num());
+	// Save as persistent asset
+	FString PackageFileName;
+	if (FPackageName::TryConvertLongPackageNameToFilename(
+		Package->GetName(), PackageFileName, FPackageName::GetAssetPackageExtension()))
+	{
+		FString Dir = FPaths::GetPath(PackageFileName);
+		IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+		PlatformFile.CreateDirectoryTree(*Dir);
+
+		FSavePackageArgs SaveArgs;
+		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+		UPackage::SavePackage(Package, StaticMesh, *PackageFileName, SaveArgs);
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("ModelImporter: Created UStaticMesh '%s' at %s (%d verts, %d tris, %d materials, %d LODs)"),
+		*MeshName, *AssetPath, ModelData.Vertices.Num(), TotalTris, Materials.Num(), LODMeshDescs.Num());
 
 	return StaticMesh;
 }
@@ -677,6 +710,22 @@ UStaticMesh* FModelImporter::ResolveModel(const FString& SourceModelPath, int32 
 	if (UStaticMesh** Cached = ModelCache.Find(CacheKey))
 	{
 		return *Cached;
+	}
+
+	// Check if a persistent asset already exists on disk
+	FString CleanPath = NormPath;
+	CleanPath.RemoveFromStart(TEXT("models/"));
+	CleanPath = FPaths::GetPath(CleanPath) / FPaths::GetBaseFilename(CleanPath);
+	CleanPath = CleanPath.Replace(TEXT(" "), TEXT("_"));
+	FString AssetPath = FString::Printf(TEXT("/Game/SourceBridge/Models/%s"), *CleanPath);
+	FString AssetName = FPaths::GetCleanFilename(AssetPath);
+	FString FullObjectPath = AssetPath + TEXT(".") + AssetName;
+	UStaticMesh* ExistingMesh = LoadObject<UStaticMesh>(nullptr, *FullObjectPath);
+	if (ExistingMesh)
+	{
+		UE_LOG(LogTemp, Log, TEXT("ModelImporter: '%s' -> loaded from persistent asset"), *SourceModelPath);
+		ModelCache.Add(CacheKey, ExistingMesh);
+		return ExistingMesh;
 	}
 
 	UE_LOG(LogTemp, Log, TEXT("ModelImporter: Resolving model '%s' (skin %d)..."), *SourceModelPath, SkinIndex);

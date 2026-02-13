@@ -288,6 +288,313 @@ ASourceBrushEntity::ASourceBrushEntity()
 #endif
 }
 
+void ASourceBrushEntity::PostLoad()
+{
+	Super::PostLoad();
+
+	// If we have stored brush data but no proc mesh components, reconstruct
+	if (StoredBrushData.Num() > 0)
+	{
+		bool bNeedsReconstruct = (BrushMeshes.Num() == 0);
+		if (!bNeedsReconstruct)
+		{
+			// Check if all mesh references are valid
+			for (const auto& Mesh : BrushMeshes)
+			{
+				if (!Mesh || Mesh->GetNumSections() == 0)
+				{
+					bNeedsReconstruct = true;
+					break;
+				}
+			}
+		}
+
+		if (bNeedsReconstruct)
+		{
+			ReconstructFromStoredData();
+		}
+	}
+}
+
+// ---- UV Axis Parsing Helper ----
+static bool ParseStoredUVAxis(const FString& AxisStr, FVector& Axis, float& Offset, float& Scale)
+{
+	int32 BracketStart = AxisStr.Find(TEXT("["));
+	int32 BracketEnd = AxisStr.Find(TEXT("]"));
+	if (BracketStart == INDEX_NONE || BracketEnd == INDEX_NONE) return false;
+
+	FString Inside = AxisStr.Mid(BracketStart + 1, BracketEnd - BracketStart - 1).TrimStartAndEnd();
+	FString After = AxisStr.Mid(BracketEnd + 1).TrimStartAndEnd();
+
+	TArray<FString> Parts;
+	Inside.ParseIntoArrayWS(Parts);
+	if (Parts.Num() < 4) return false;
+
+	Axis.X = FCString::Atod(*Parts[0]);
+	Axis.Y = FCString::Atod(*Parts[1]);
+	Axis.Z = FCString::Atod(*Parts[2]);
+	Offset = FCString::Atof(*Parts[3]);
+	Scale = FCString::Atof(*After);
+	if (FMath::IsNearlyZero(Scale)) Scale = 0.25f;
+
+	return true;
+}
+
+// ---- Polygon Clipping Helpers (duplicated from VMFImporter for self-contained reconstruction) ----
+static TArray<FVector> ClipPolygon(const TArray<FVector>& Polygon, const FPlane& Plane)
+{
+	if (Polygon.Num() < 3) return TArray<FVector>();
+
+	TArray<FVector> Result;
+	constexpr float Epsilon = 0.01f;
+
+	for (int32 i = 0; i < Polygon.Num(); i++)
+	{
+		const FVector& Current = Polygon[i];
+		const FVector& Next = Polygon[(i + 1) % Polygon.Num()];
+
+		float DistCurrent = Plane.PlaneDot(Current);
+		float DistNext = Plane.PlaneDot(Next);
+
+		if (DistCurrent >= -Epsilon) Result.Add(Current);
+
+		if ((DistCurrent > Epsilon && DistNext < -Epsilon) ||
+			(DistCurrent < -Epsilon && DistNext > Epsilon))
+		{
+			float T = DistCurrent / (DistCurrent - DistNext);
+			T = FMath::Clamp(T, 0.0f, 1.0f);
+			Result.Add(FMath::Lerp(Current, Next, T));
+		}
+	}
+
+	return Result;
+}
+
+static TArray<FVector> CreateLargePoly(const FPlane& Plane, const FVector& PointOnPlane)
+{
+	constexpr float HalfSize = 65536.0f;
+	FVector Normal(Plane.X, Plane.Y, Plane.Z);
+
+	FVector Up = FMath::Abs(Normal.Z) > 0.9f ? FVector(1, 0, 0) : FVector(0, 0, 1);
+	FVector U = FVector::CrossProduct(Normal, Up).GetSafeNormal() * HalfSize;
+	FVector V = FVector::CrossProduct(Normal, U).GetSafeNormal() * HalfSize;
+
+	return {
+		PointOnPlane - U - V,
+		PointOnPlane + U - V,
+		PointOnPlane + U + V,
+		PointOnPlane - U + V
+	};
+}
+
+void ASourceBrushEntity::ReconstructFromStoredData()
+{
+	// Clear existing proc meshes
+	for (auto& Mesh : BrushMeshes)
+	{
+		if (Mesh)
+		{
+			Mesh->DestroyComponent();
+		}
+	}
+	BrushMeshes.Empty();
+
+	const float Scale = 1.0f / 0.525f; // Source→UE scale
+	FVector ActorCenter = GetActorLocation();
+
+	for (int32 SolidIdx = 0; SolidIdx < StoredBrushData.Num(); SolidIdx++)
+	{
+		const FImportedBrushData& BrushData = StoredBrushData[SolidIdx];
+		if (BrushData.Sides.Num() < 4) continue;
+
+		// Build planes from stored plane points
+		TArray<FPlane> Planes;
+		TArray<FVector> PlaneFirstPoints;
+		TArray<FVector> UAxes, VAxes;
+		TArray<float> UOffsets, VOffsets, UScales, VScales;
+		TArray<FString> Materials;
+
+		for (const FImportedSideData& Side : BrushData.Sides)
+		{
+			FVector Edge1 = Side.PlaneP2 - Side.PlaneP1;
+			FVector Edge2 = Side.PlaneP3 - Side.PlaneP1;
+			FVector Normal = FVector::CrossProduct(Edge1, Edge2);
+			if (Normal.IsNearlyZero()) continue;
+			Normal.Normalize();
+
+			Planes.Add(FPlane(Side.PlaneP1, Normal));
+			PlaneFirstPoints.Add(Side.PlaneP1);
+
+			FVector UAxis(1, 0, 0), VAxis(0, -1, 0);
+			float UOff = 0, VOff = 0, USc = 0.25f, VSc = 0.25f;
+			ParseStoredUVAxis(Side.UAxisStr, UAxis, UOff, USc);
+			ParseStoredUVAxis(Side.VAxisStr, VAxis, VOff, VSc);
+
+			UAxes.Add(UAxis);
+			VAxes.Add(VAxis);
+			UOffsets.Add(UOff);
+			VOffsets.Add(VOff);
+			UScales.Add(USc);
+			VScales.Add(VSc);
+			Materials.Add(Side.Material);
+		}
+
+		if (Planes.Num() < 4) continue;
+
+		// Reconstruct face polygons by CSG clipping
+		TArray<TArray<FVector>> Faces;
+		TArray<int32> FaceToPlaneIdx;
+
+		for (int32 i = 0; i < Planes.Num(); i++)
+		{
+			TArray<FVector> Poly = CreateLargePoly(Planes[i], PlaneFirstPoints[i]);
+
+			for (int32 j = 0; j < Planes.Num(); j++)
+			{
+				if (i == j) continue;
+				// Clip by the inward-pointing plane: keep what's behind other planes
+				FPlane ClipPlane(-Planes[j].X, -Planes[j].Y, -Planes[j].Z, -Planes[j].W);
+				Poly = ClipPolygon(Poly, ClipPlane);
+				if (Poly.Num() < 3) break;
+			}
+
+			if (Poly.Num() >= 3)
+			{
+				Faces.Add(Poly);
+				FaceToPlaneIdx.Add(i);
+			}
+		}
+
+		if (Faces.Num() < 4) continue;
+
+		// Build proc mesh component
+		FString MeshName = FString::Printf(TEXT("BrushMesh_%d"), SolidIdx);
+		UProceduralMeshComponent* ProcMesh = NewObject<UProceduralMeshComponent>(this, *MeshName);
+		ProcMesh->AttachToComponent(RootComponent, FAttachmentTransformRules::KeepRelativeTransform);
+		ProcMesh->SetRelativeTransform(FTransform::Identity);
+		ProcMesh->CreationMethod = EComponentCreationMethod::Instance;
+
+		// Group faces by material into sections
+		TMap<FString, int32> MatToSection;
+		struct FSectionData
+		{
+			TArray<FVector> Vertices;
+			TArray<int32> Triangles;
+			TArray<FVector> Normals;
+			TArray<FVector2D> UVs;
+			UMaterialInterface* Material = nullptr;
+		};
+		TArray<FSectionData> Sections;
+
+		for (int32 FaceIdx = 0; FaceIdx < Faces.Num(); FaceIdx++)
+		{
+			const TArray<FVector>& FaceVerts = Faces[FaceIdx];
+			if (FaceVerts.Num() < 3) continue;
+
+			int32 PlaneIdx = FaceToPlaneIdx[FaceIdx];
+			const FString& MatPath = Materials[PlaneIdx];
+
+			// Resolve material from manifest
+			UMaterialInterface* Mat = nullptr;
+			if (!MatPath.IsEmpty())
+			{
+				Mat = FMaterialImporter::ResolveSourceMaterial(MatPath);
+			}
+
+			FString MatKey = MatPath.IsEmpty() ? TEXT("__none__") : MatPath;
+			int32* SecIdx = MatToSection.Find(MatKey);
+			if (!SecIdx)
+			{
+				int32 NewIdx = Sections.Num();
+				MatToSection.Add(MatKey, NewIdx);
+				Sections.AddDefaulted();
+				Sections[NewIdx].Material = Mat;
+				SecIdx = &MatToSection[MatKey];
+			}
+
+			FSectionData& Sec = Sections[*SecIdx];
+			int32 BaseVert = Sec.Vertices.Num();
+
+			// Get texture size for UV normalization
+			FIntPoint TexSize(512, 512);
+			if (!MatPath.IsEmpty())
+			{
+				TexSize = FMaterialImporter::GetTextureSize(MatPath);
+			}
+
+			// Compute face center and outward normal
+			FVector FaceCenter = FVector::ZeroVector;
+			for (const FVector& V : FaceVerts)
+			{
+				FVector UEPos(V.X * Scale, -V.Y * Scale, V.Z * Scale);
+				FaceCenter += UEPos - ActorCenter;
+			}
+			FaceCenter /= FaceVerts.Num();
+
+			// Winding normal
+			FVector V0(FaceVerts[0].X * Scale, -FaceVerts[0].Y * Scale, FaceVerts[0].Z * Scale);
+			FVector V1(FaceVerts[1].X * Scale, -FaceVerts[1].Y * Scale, FaceVerts[1].Z * Scale);
+			FVector V2(FaceVerts[2].X * Scale, -FaceVerts[2].Y * Scale, FaceVerts[2].Z * Scale);
+			V0 -= ActorCenter; V1 -= ActorCenter; V2 -= ActorCenter;
+			FVector WindingNormal = FVector::CrossProduct(V1 - V0, V2 - V0);
+			if (!WindingNormal.IsNearlyZero()) WindingNormal.Normalize();
+			bool bNormalPointsOutward = FVector::DotProduct(WindingNormal, FaceCenter) > 0.0f;
+			FVector OutwardNormal = bNormalPointsOutward ? WindingNormal : -WindingNormal;
+			bool bFlipWinding = bNormalPointsOutward;
+
+			for (const FVector& V : FaceVerts)
+			{
+				// Source→UE conversion
+				FVector LocalPos(V.X * Scale, -V.Y * Scale, V.Z * Scale);
+				LocalPos -= ActorCenter;
+				Sec.Vertices.Add(LocalPos);
+				Sec.Normals.Add(OutwardNormal);
+
+				// Compute UVs in Source space
+				float UTexel = FVector::DotProduct(V, UAxes[PlaneIdx]) / UScales[PlaneIdx] + UOffsets[PlaneIdx];
+				float VTexel = FVector::DotProduct(V, VAxes[PlaneIdx]) / VScales[PlaneIdx] + VOffsets[PlaneIdx];
+				Sec.UVs.Add(FVector2D(UTexel / (float)TexSize.X, VTexel / (float)TexSize.Y));
+			}
+
+			// Fan triangulation
+			for (int32 i = 1; i < FaceVerts.Num() - 1; i++)
+			{
+				Sec.Triangles.Add(BaseVert);
+				if (bFlipWinding)
+				{
+					Sec.Triangles.Add(BaseVert + i + 1);
+					Sec.Triangles.Add(BaseVert + i);
+				}
+				else
+				{
+					Sec.Triangles.Add(BaseVert + i);
+					Sec.Triangles.Add(BaseVert + i + 1);
+				}
+			}
+		}
+
+		// Create mesh sections
+		for (int32 i = 0; i < Sections.Num(); i++)
+		{
+			ProcMesh->CreateMeshSection_LinearColor(i,
+				Sections[i].Vertices, Sections[i].Triangles,
+				Sections[i].Normals, Sections[i].UVs,
+				TArray<FLinearColor>(), TArray<FProcMeshTangent>(), true);
+
+			if (Sections[i].Material)
+			{
+				ProcMesh->SetMaterial(i, Sections[i].Material);
+			}
+		}
+
+		ProcMesh->RegisterComponent();
+		BrushMeshes.Add(ProcMesh);
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("SourceBrushEntity: Reconstructed %d proc meshes from stored data for '%s'"),
+		BrushMeshes.Num(), *SourceClassname);
+}
+
 UProceduralMeshComponent* ASourceBrushEntity::AddBrushMesh(const FString& MeshName)
 {
 	UProceduralMeshComponent* ProcMesh = NewObject<UProceduralMeshComponent>(this, *MeshName);

@@ -269,6 +269,10 @@ class SOURCEBRIDGE_API ASourceBrushEntity : public ASourceEntityActor
 public:
 	ASourceBrushEntity();
 	virtual void BeginPlay() override;
+	virtual void PostLoad() override;
+
+	/** Rebuild proc meshes from StoredBrushData (called by PostLoad when meshes are missing). */
+	void ReconstructFromStoredData();
 
 #if WITH_EDITOR
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;

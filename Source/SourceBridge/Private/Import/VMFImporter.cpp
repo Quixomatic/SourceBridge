@@ -6,12 +6,9 @@
 #include "Actors/SourceEntityActor.h"
 #include "Runtime/SourceBridgeGameMode.h"
 #include "Entities/EntityIOConnection.h"
-#include "Engine/Brush.h"
-#include "Engine/Polys.h"
 #include "Engine/World.h"
 #include "Engine/DirectionalLight.h"
 #include "Components/DirectionalLightComponent.h"
-#include "Model.h"
 #include "Editor.h"
 #include "Components/PointLightComponent.h"
 #include "Components/SpotLightComponent.h"
@@ -19,8 +16,6 @@
 #include "Engine/SpotLight.h"
 #include "Engine/SphereReflectionCapture.h"
 #include "Materials/MaterialInterface.h"
-#include "Components/BrushComponent.h"
-#include "BSPOps.h"
 #include "EngineUtils.h"
 #include "Misc/ScopedSlowTask.h"
 #include "ProceduralMeshComponent.h"
@@ -616,21 +611,26 @@ UProceduralMeshComponent* FVMFImporter::BuildProceduralMesh(
 	return ProcMesh;
 }
 
-// ---- Brush Creation (worldspawn solids) ----
+// ---- Solid Import (worldspawn → ASourceBrushEntity) ----
 
-ABrush* FVMFImporter::CreateBrushFromFaces(
-	UWorld* World,
-	const TArray<TArray<FVector>>& Faces,
-	const TArray<FVector>& FaceNormals,
-	const TArray<FVMFSideData>& SideData,
-	const TArray<int32>& FaceToSideMapping,
-	const FVMFImportSettings& Settings)
+ASourceBrushEntity* FVMFImporter::ImportSolid(const FVMFKeyValues& SolidBlock, UWorld* World,
+	const FVMFImportSettings& Settings, FVMFImportResult& Result)
 {
+	TArray<TArray<FVector>> Faces;
+	TArray<FVector> FaceNormals;
+	TArray<FVMFSideData> SideDataArray;
+	TArray<int32> FaceToSideMapping;
+
+	if (!ParseSolid(SolidBlock, Faces, FaceNormals, SideDataArray, FaceToSideMapping, Result))
+	{
+		return nullptr;
+	}
+
 	if (Faces.Num() < 4) return nullptr;
 
 	float Scale = Settings.ScaleMultiplier;
 
-	// Compute center of all vertices for the brush origin
+	// Compute center of all vertices
 	FVector Center = FVector::ZeroVector;
 	int32 TotalVerts = 0;
 	for (const auto& Face : Faces)
@@ -644,122 +644,86 @@ ABrush* FVMFImporter::CreateBrushFromFaces(
 	if (TotalVerts == 0) return nullptr;
 	Center /= TotalVerts;
 
-	// Spawn brush actor at computed center
+	// Spawn ASourceBrushEntity for worldspawn solid
 	FActorSpawnParameters SpawnParams;
 	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 	FTransform SpawnTransform;
 	SpawnTransform.SetLocation(Center);
-	ABrush* Brush = World->SpawnActor<ABrush>(ABrush::StaticClass(), SpawnTransform, SpawnParams);
-	if (!Brush) return nullptr;
 
-	// Force the actor position in case ABrush constructor reset it
-	Brush->SetActorLocation(Center);
-	Brush->BrushType = Brush_Add;
-	Brush->SetActorLabel(TEXT("ImportedBrush"));
-
-	UE_LOG(LogTemp, Verbose, TEXT("VMFImporter: Brush at (%f, %f, %f) with %d faces, %d verts"),
-		Brush->GetActorLocation().X, Brush->GetActorLocation().Y, Brush->GetActorLocation().Z,
-		Faces.Num(), TotalVerts);
-
-	// Create the model
-	UModel* Model = NewObject<UModel>(Brush, NAME_None, RF_Transactional);
-	Model->Initialize(nullptr, true);
-	Model->Polys = NewObject<UPolys>(Model, NAME_None, RF_Transactional);
-	Brush->Brush = Model;
-
-	// Add faces as polys (matching UE's BrushBuilder pattern)
-	for (int32 FaceIdx = 0; FaceIdx < Faces.Num(); FaceIdx++)
+	ASourceBrushEntity* Entity = World->SpawnActor<ASourceBrushEntity>(
+		ASourceBrushEntity::StaticClass(), SpawnTransform, SpawnParams);
+	if (!Entity)
 	{
-		const TArray<FVector>& FaceVerts = Faces[FaceIdx];
-		if (FaceVerts.Num() < 3) continue;
-
-		FPoly Poly;
-		Poly.Init();
-		Poly.iLink = FaceIdx;
-
-		for (const FVector& V : FaceVerts)
-		{
-			FVector UEPos = SourceToUE(V, Scale);
-			Poly.Vertices.Add(FVector3f(UEPos - Center));
-		}
-
-		Poly.Base = Poly.Vertices[0];
-
-		int32 SideIdx = (FaceIdx < FaceToSideMapping.Num()) ? FaceToSideMapping[FaceIdx] : FaceIdx;
-
-		if (SideIdx < SideData.Num())
-		{
-			const FVMFSideData& Side = SideData[SideIdx];
-
-			if (Settings.bImportMaterials && !Side.Material.IsEmpty())
-			{
-				Poly.ItemName = FName(*Side.Material);
-				UMaterialInterface* Mat = FMaterialImporter::ResolveSourceMaterial(Side.Material);
-				if (Mat)
-				{
-					Poly.Material = Mat;
-				}
-			}
-
-			FVector UEUAxis = SourceDirToUE(Side.UAxis);
-			FVector UEVAxis = SourceDirToUE(Side.VAxis);
-
-			if (!FMath::IsNearlyZero(Side.UScale))
-			{
-				Poly.TextureU = FVector3f(UEUAxis / (Side.UScale * Scale));
-			}
-			if (!FMath::IsNearlyZero(Side.VScale))
-			{
-				Poly.TextureV = FVector3f(UEVAxis / (Side.VScale * Scale));
-			}
-		}
-
-		if (Poly.Finalize(Brush, 1) == 0)
-		{
-			Model->Polys->Element.Add(MoveTemp(Poly));
-		}
-		else
-		{
-			UE_LOG(LogTemp, Warning, TEXT("VMFImporter: Poly.Finalize failed for face %d"), FaceIdx);
-		}
-	}
-
-	Model->BuildBound();
-
-	// Link the brush component to the model
-	Brush->GetBrushComponent()->Brush = Model;
-	FBSPOps::csgPrepMovingBrush(Brush);
-
-	// Build a ProceduralMeshComponent for solid rendering with materials
-	BuildProceduralMesh(Brush, TEXT("BrushMesh"), Faces, FaceNormals, SideData, FaceToSideMapping, Settings, Center);
-
-	return Brush;
-}
-
-// ---- Solid Import (worldspawn) ----
-
-ABrush* FVMFImporter::ImportSolid(const FVMFKeyValues& SolidBlock, UWorld* World,
-	const FVMFImportSettings& Settings, FVMFImportResult& Result)
-{
-	TArray<TArray<FVector>> Faces;
-	TArray<FVector> FaceNormals;
-	TArray<FVMFSideData> SideDataArray;
-	TArray<int32> FaceToSideMapping;
-
-	if (!ParseSolid(SolidBlock, Faces, FaceNormals, SideDataArray, FaceToSideMapping, Result))
-	{
+		Result.Warnings.Add(TEXT("Failed to spawn ASourceBrushEntity for worldspawn solid."));
 		return nullptr;
 	}
+	Entity->SetActorLocation(Center);
+	Entity->SourceClassname = TEXT("worldspawn");
+	Entity->SetActorLabel(TEXT("ImportedBrush"));
 
-	ABrush* Brush = CreateBrushFromFaces(World, Faces, FaceNormals, SideDataArray, FaceToSideMapping, Settings);
-	if (Brush)
+	// Build proc mesh
+	UProceduralMeshComponent* ProcMesh = BuildProceduralMesh(
+		Entity, TEXT("BrushMesh"),
+		Faces, FaceNormals, SideDataArray, FaceToSideMapping,
+		Settings, Center);
+
+	if (ProcMesh)
 	{
-		Result.BrushesImported++;
-		return Brush;
+		Entity->BrushMeshes.Add(ProcMesh);
 	}
 
-	Result.Warnings.Add(TEXT("Failed to create brush from faces."));
-	return nullptr;
+	// Store solid data for reconstruction and re-export
+	FImportedBrushData BrushData;
+
+	// Try to get solid ID
+	for (const auto& Prop : SolidBlock.Properties)
+	{
+		if (Prop.Key.Equals(TEXT("id"), ESearchCase::IgnoreCase))
+		{
+			BrushData.SolidId = FCString::Atoi(*Prop.Value);
+			break;
+		}
+	}
+
+	// Store per-side data
+	for (int32 SideIdx = 0; SideIdx < SideDataArray.Num(); SideIdx++)
+	{
+		const FVMFSideData& Side = SideDataArray[SideIdx];
+
+		FImportedSideData ImportedSide;
+		ImportedSide.Material = Side.Material;
+		ImportedSide.UAxisStr = Side.RawUAxisStr;
+		ImportedSide.VAxisStr = Side.RawVAxisStr;
+		ImportedSide.LightmapScale = Side.LightmapScale;
+
+		// Get original plane points from the VMF block
+		int32 CurrentSide = 0;
+		for (const FVMFKeyValues& SideBlock : SolidBlock.Children)
+		{
+			if (!SideBlock.ClassName.Equals(TEXT("side"), ESearchCase::IgnoreCase)) continue;
+
+			if (CurrentSide == SideIdx)
+			{
+				for (const auto& Prop : SideBlock.Properties)
+				{
+					if (Prop.Key.Equals(TEXT("plane"), ESearchCase::IgnoreCase))
+					{
+						ParsePlanePoints(Prop.Value, ImportedSide.PlaneP1, ImportedSide.PlaneP2, ImportedSide.PlaneP3);
+						break;
+					}
+				}
+				break;
+			}
+			CurrentSide++;
+		}
+
+		BrushData.Sides.Add(MoveTemp(ImportedSide));
+	}
+
+	Entity->StoredBrushData.Add(MoveTemp(BrushData));
+	Result.BrushesImported++;
+
+	return Entity;
 }
 
 // ---- Brush Entity Import ----

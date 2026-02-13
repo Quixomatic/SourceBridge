@@ -61,8 +61,7 @@ struct FVMFImportResult
 
 /**
  * Imports a parsed VMF into the current UE level.
- * Creates ABrush actors for worldspawn solids.
- * Creates ASourceBrushEntity actors for brush entities with full keyvalue/I/O preservation.
+ * Creates ASourceBrushEntity actors for all brush geometry (worldspawn and entity).
  * Creates typed ASourceEntityActor subclasses for point entities.
  */
 class SOURCEBRIDGE_API FVMFImporter
@@ -110,18 +109,9 @@ private:
 	/** Create a large initial polygon on the given plane. */
 	static TArray<FVector> CreateLargePolygonOnPlane(const FPlane& Plane, const FVector& PointOnPlane);
 
-	/** Create an ABrush actor in the world from face polygons with per-face data (worldspawn solids). */
-	static class ABrush* CreateBrushFromFaces(
-		UWorld* World,
-		const TArray<TArray<FVector>>& Faces,
-		const TArray<FVector>& FaceNormals,
-		const TArray<FVMFSideData>& SideData,
-		const TArray<int32>& FaceToSideMapping,
-		const FVMFImportSettings& Settings);
-
 	/**
 	 * Build a ProceduralMeshComponent from reconstructed faces and attach to an existing actor.
-	 * Used for both worldspawn brushes (on ABrush) and brush entity solids (on ASourceBrushEntity).
+	 * Used for all brush geometry (worldspawn and entity).
 	 * ActorCenter is the world-space center of the owning actor (for local-space vertex computation).
 	 */
 	static UProceduralMeshComponent* BuildProceduralMesh(
@@ -145,8 +135,8 @@ private:
 		TArray<int32>& OutFaceToSideMapping,
 		FVMFImportResult& Result);
 
-	/** Import a worldspawn or entity solid block. Returns the created brush (or null). */
-	static class ABrush* ImportSolid(const FVMFKeyValues& SolidBlock, UWorld* World,
+	/** Import a worldspawn solid block as ASourceBrushEntity. */
+	static ASourceBrushEntity* ImportSolid(const FVMFKeyValues& SolidBlock, UWorld* World,
 		const FVMFImportSettings& Settings, FVMFImportResult& Result);
 
 	/** Import a brush entity (entity with solid children) as an ASourceBrushEntity. */
