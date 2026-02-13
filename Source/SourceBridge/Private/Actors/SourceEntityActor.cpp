@@ -482,6 +482,7 @@ void ASourceBrushEntity::ReconstructFromStoredData()
 			TArray<int32> Triangles;
 			TArray<FVector> Normals;
 			TArray<FVector2D> UVs;
+			TArray<FProcMeshTangent> Tangents;
 			UMaterialInterface* Material = nullptr;
 		};
 		TArray<FSectionData> Sections;
@@ -542,6 +543,11 @@ void ASourceBrushEntity::ReconstructFromStoredData()
 			FVector OutwardNormal = bNormalPointsOutward ? WindingNormal : -WindingNormal;
 			bool bFlipWinding = bNormalPointsOutward;
 
+			// Compute tangent from texture U axis (Source→UE: negate Y)
+			FVector UETangentDir(UAxes[PlaneIdx].X, -UAxes[PlaneIdx].Y, UAxes[PlaneIdx].Z);
+			if (!UETangentDir.IsNearlyZero()) UETangentDir.Normalize();
+			FProcMeshTangent FaceTangent(UETangentDir, false);
+
 			for (const FVector& V : FaceVerts)
 			{
 				// Source→UE conversion
@@ -549,6 +555,7 @@ void ASourceBrushEntity::ReconstructFromStoredData()
 				LocalPos -= ActorCenter;
 				Sec.Vertices.Add(LocalPos);
 				Sec.Normals.Add(OutwardNormal);
+				Sec.Tangents.Add(FaceTangent);
 
 				// Compute UVs in Source space
 				float UTexel = FVector::DotProduct(V, UAxes[PlaneIdx]) / UScales[PlaneIdx] + UOffsets[PlaneIdx];
@@ -579,7 +586,7 @@ void ASourceBrushEntity::ReconstructFromStoredData()
 			ProcMesh->CreateMeshSection_LinearColor(i,
 				Sections[i].Vertices, Sections[i].Triangles,
 				Sections[i].Normals, Sections[i].UVs,
-				TArray<FLinearColor>(), TArray<FProcMeshTangent>(), true);
+				TArray<FLinearColor>(), Sections[i].Tangents, true);
 
 			if (Sections[i].Material)
 			{

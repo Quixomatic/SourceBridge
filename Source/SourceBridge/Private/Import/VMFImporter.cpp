@@ -526,6 +526,7 @@ UProceduralMeshComponent* FVMFImporter::BuildProceduralMesh(
 		TArray<int32> Triangles;
 		TArray<FVector> Normals;
 		TArray<FVector2D> UVs;
+		TArray<FProcMeshTangent> Tangents;
 	};
 	TArray<FSectionData> Sections;
 	TArray<UMaterialInterface*> SectionMaterials;
@@ -557,11 +558,21 @@ UProceduralMeshComponent* FVMFImporter::BuildProceduralMesh(
 			TexSize = FMaterialImporter::GetTextureSize(FD.Side->Material);
 		}
 
+		// Compute tangent from texture U axis direction (converted to UE space)
+		FProcMeshTangent FaceTangent;
+		if (FD.Side)
+		{
+			FVector UETangent = SourceDirToUE(FD.Side->UAxis);
+			if (!UETangent.IsNearlyZero()) UETangent.Normalize();
+			FaceTangent = FProcMeshTangent(UETangent, false);
+		}
+
 		for (const FVector& V : FaceVerts)
 		{
 			FVector LocalPos = SourceToUE(V, Scale) - ActorCenter;
 			Sec.Vertices.Add(LocalPos);
 			Sec.Normals.Add(FD.OutwardNormal);
+			Sec.Tangents.Add(FaceTangent);
 
 			if (FD.Side)
 			{
@@ -599,7 +610,7 @@ UProceduralMeshComponent* FVMFImporter::BuildProceduralMesh(
 		ProcMesh->CreateMeshSection_LinearColor(i,
 			Sections[i].Vertices, Sections[i].Triangles,
 			Sections[i].Normals, Sections[i].UVs,
-			TArray<FLinearColor>(), TArray<FProcMeshTangent>(), true);
+			TArray<FLinearColor>(), Sections[i].Tangents, true);
 
 		if (SectionMaterials[i])
 		{
