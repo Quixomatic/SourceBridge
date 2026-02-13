@@ -2,6 +2,7 @@
 #include "SourceBridgeModule.h"
 #include "Entities/EntityExporter.h"
 #include "Entities/FGDParser.h"
+#include "Actors/SourceEntityActor.h"
 #include "Materials/SurfaceProperties.h"
 #include "Engine/World.h"
 #include "Engine/Brush.h"
@@ -110,6 +111,54 @@ void FExportValidator::ValidateBrushLimits(UWorld* World, FValidationResult& Res
 		Result.AddMessage(EValidationSeverity::Warning, TEXT("Limits"),
 			TEXT("No brushes found in scene. VMF will have no world geometry."));
 	}
+
+	// Count ASourceBrushEntity solids and check for empty entities
+	int32 BrushEntityCount = 0;
+	int32 BrushEntitySolidCount = 0;
+	int32 EmptyBrushEntityCount = 0;
+
+	for (TActorIterator<ASourceBrushEntity> It(World); It; ++It)
+	{
+		ASourceBrushEntity* BrushEnt = *It;
+		if (!BrushEnt) continue;
+
+		BrushEntityCount++;
+
+		if (BrushEnt->StoredBrushData.Num() == 0)
+		{
+			EmptyBrushEntityCount++;
+			Result.AddMessage(EValidationSeverity::Warning, TEXT("Geometry"),
+				FString::Printf(TEXT("Brush entity '%s' (%s) has no geometry and will export without solids."),
+					*BrushEnt->GetActorLabel(), *BrushEnt->SourceClassname));
+		}
+		else
+		{
+			BrushEntitySolidCount += BrushEnt->StoredBrushData.Num();
+			for (const FImportedBrushData& Brush : BrushEnt->StoredBrushData)
+			{
+				BrushSideCount += Brush.Sides.Num();
+			}
+		}
+	}
+
+	// Total solid count across all sources
+	int32 TotalSolids = BrushCount + BrushEntitySolidCount;
+	Result.AddMessage(EValidationSeverity::Info, TEXT("Limits"),
+		FString::Printf(TEXT("Total solids: %d (%d worldspawn + %d from %d brush entities) / %d"),
+			TotalSolids, BrushCount, BrushEntitySolidCount, BrushEntityCount,
+			FSourceEngineLimits::MAX_MAP_BRUSHES));
+
+	if (TotalSolids > FSourceEngineLimits::MAX_MAP_BRUSHES)
+	{
+		Result.AddMessage(EValidationSeverity::Error, TEXT("Limits"),
+			FString::Printf(TEXT("Total solid count %d exceeds Source limit of %d!"),
+				TotalSolids, FSourceEngineLimits::MAX_MAP_BRUSHES));
+	}
+	else if (TotalSolids > FSourceEngineLimits::MAX_MAP_BRUSHES * 0.8)
+	{
+		Result.AddMessage(EValidationSeverity::Warning, TEXT("Limits"),
+			FString::Printf(TEXT("Total solid count %d is >80%% of Source limit."), TotalSolids));
+	}
 }
 
 void FExportValidator::ValidateEntities(UWorld* World, FValidationResult& Result)
@@ -192,6 +241,61 @@ void FExportValidator::ValidateGeometry(UWorld* World, FValidationResult& Result
 		Result.AddMessage(EValidationSeverity::Warning, TEXT("Geometry"),
 			FString::Printf(TEXT("%d subtractive brushes found. Source doesn't support subtraction - these will be skipped."),
 				SubtractiveCount));
+	}
+
+	// Check for degenerate geometry (zero-volume brushes, coplanar faces)
+	int32 DegenerateCount = 0;
+	for (TActorIterator<ABrush> It(World); It; ++It)
+	{
+		ABrush* Brush = *It;
+		if (!Brush || Brush->IsA<AVolume>()) continue;
+		if (Brush == World->GetDefaultBrush()) continue;
+		if (!Brush->Brush || !Brush->Brush->Polys) continue;
+
+		const TArray<FPoly>& Polys = Brush->Brush->Polys->Element;
+		if (Polys.Num() < 4) continue; // Already warned above
+
+		// Check for zero-area faces and coplanar adjacent faces
+		int32 CoplanarPairs = 0;
+		for (int32 i = 0; i < Polys.Num(); i++)
+		{
+			// Check face area
+			FVector Normal(Polys[i].Normal);
+			if (Normal.IsNearlyZero(0.001f))
+			{
+				DegenerateCount++;
+				Result.AddMessage(EValidationSeverity::Warning, TEXT("Geometry"),
+					FString::Printf(TEXT("Brush '%s' face %d has zero-area (degenerate normal)."),
+						*Brush->GetName(), i));
+				continue;
+			}
+
+			// Check for coplanar faces (duplicate planes)
+			for (int32 j = i + 1; j < Polys.Num(); j++)
+			{
+				FVector OtherNormal(Polys[j].Normal);
+				if (OtherNormal.IsNearlyZero(0.001f)) continue;
+
+				float Dot = FMath::Abs(FVector::DotProduct(Normal, FVector(OtherNormal)));
+				if (Dot > 0.999f)
+				{
+					// Normals are parallel — check if they share the same plane
+					FVector Diff = FVector(Polys[i].Vertices[0]) - FVector(Polys[j].Vertices[0]);
+					float PlaneDist = FMath::Abs(FVector::DotProduct(Diff, Normal));
+					if (PlaneDist < 0.1f)
+					{
+						CoplanarPairs++;
+					}
+				}
+			}
+		}
+
+		if (CoplanarPairs > 0)
+		{
+			Result.AddMessage(EValidationSeverity::Warning, TEXT("Geometry"),
+				FString::Printf(TEXT("Brush '%s' has %d coplanar face pairs (may produce invalid solid in Source)."),
+					*Brush->GetName(), CoplanarPairs));
+		}
 	}
 }
 
