@@ -332,6 +332,7 @@ void FExportValidator::ValidateSpawns(UWorld* World, FValidationResult& Result)
 	int32 CTSpawnCount = 0;
 	int32 UntaggedSpawnCount = 0;
 
+	// Count APlayerStart actors (UE-native spawns)
 	for (TActorIterator<APlayerStart> It(World); It; ++It)
 	{
 		APlayerStart* Start = *It;
@@ -363,12 +364,40 @@ void FExportValidator::ValidateSpawns(UWorld* World, FValidationResult& Result)
 		}
 	}
 
+	// Count Source spawn actors (from import pipeline)
+	for (TActorIterator<ASourceTSpawn> It(World); It; ++It)
+	{
+		TSpawnCount++;
+	}
+	for (TActorIterator<ASourceCTSpawn> It(World); It; ++It)
+	{
+		CTSpawnCount++;
+	}
+
+	// Count any ASourceEntityActor with spawn classnames (manually created)
+	for (TActorIterator<ASourceEntityActor> It(World); It; ++It)
+	{
+		ASourceEntityActor* Entity = *It;
+		if (!Entity) continue;
+		// Skip subclasses already counted above
+		if (Entity->IsA<ASourceTSpawn>() || Entity->IsA<ASourceCTSpawn>()) continue;
+
+		if (Entity->SourceClassname.Equals(TEXT("info_player_terrorist"), ESearchCase::IgnoreCase))
+		{
+			TSpawnCount++;
+		}
+		else if (Entity->SourceClassname.Equals(TEXT("info_player_counterterrorist"), ESearchCase::IgnoreCase))
+		{
+			CTSpawnCount++;
+		}
+	}
+
 	int32 TotalSpawns = TSpawnCount + CTSpawnCount + UntaggedSpawnCount;
 
 	if (TotalSpawns == 0)
 	{
 		Result.AddMessage(EValidationSeverity::Error, TEXT("Spawns"),
-			TEXT("No player spawns (PlayerStart actors) found. Map needs at least 1 T and 1 CT spawn."));
+			TEXT("No player spawns found. Add PlayerStart actors (tagged T/CT) or Source spawn entities."));
 		return;
 	}
 
@@ -383,13 +412,13 @@ void FExportValidator::ValidateSpawns(UWorld* World, FValidationResult& Result)
 	if (EffectiveT == 0)
 	{
 		Result.AddMessage(EValidationSeverity::Error, TEXT("Spawns"),
-			TEXT("No Terrorist (T) spawns. Tag PlayerStart actors with 'T' tag."));
+			TEXT("No Terrorist (T) spawns. Add ASourceTSpawn or tag PlayerStart with 'T'."));
 	}
 
 	if (EffectiveCT == 0)
 	{
 		Result.AddMessage(EValidationSeverity::Error, TEXT("Spawns"),
-			TEXT("No Counter-Terrorist (CT) spawns. Tag PlayerStart actors with 'CT' tag."));
+			TEXT("No Counter-Terrorist (CT) spawns. Add ASourceCTSpawn or tag PlayerStart with 'CT'."));
 	}
 
 	if (EffectiveT != EffectiveCT && EffectiveT > 0 && EffectiveCT > 0)
