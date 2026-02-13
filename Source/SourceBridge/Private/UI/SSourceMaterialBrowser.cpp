@@ -602,43 +602,50 @@ TSharedRef<ITableRow> SSourceMaterialBrowser::OnGenerateMaterialRow(
 		break;
 	}
 
-	// Build thumbnail color from hash if no texture
-	FLinearColor ThumbColor = FLinearColor(0.3f, 0.3f, 0.3f);
-	if (Item->UETexture.IsValid())
-	{
-		// Use a simple average color indicator (actual thumbnails would need render targets)
-		ThumbColor = FLinearColor(0.6f, 0.6f, 0.6f);
-	}
-	else
-	{
-		// Generate deterministic color from path
-		uint32 Hash = GetTypeHash(Item->SourcePath);
-		float H = (float)(Hash % 360) / 360.0f;
-		float S = 0.3f + (float)((Hash >> 8) % 30) / 100.0f;
-		float V = 0.4f + (float)((Hash >> 16) % 20) / 100.0f;
-		ThumbColor = FLinearColor::MakeFromHSV8(
-			(uint8)(H * 255), (uint8)(S * 255), (uint8)(V * 255));
-	}
+	// Lazily load thumbnail for this entry
+	EnsureThumbnail(Item);
+
+	// Build the thumbnail widget
+	TSharedRef<SWidget> ThumbnailWidget =
+		Item->ThumbnailBrush.IsValid()
+		? StaticCastSharedRef<SWidget>(
+			SNew(SBox)
+			.WidthOverride(48)
+			.HeightOverride(48)
+			[
+				SNew(SImage)
+				.Image(Item->ThumbnailBrush.Get())
+			])
+		: StaticCastSharedRef<SWidget>(
+			SNew(SBorder)
+			.BorderImage(FAppStyle::GetBrush("WhiteBrush"))
+			.BorderBackgroundColor_Lambda([SourcePath = Item->SourcePath]()
+			{
+				uint32 Hash = GetTypeHash(SourcePath);
+				float H = (float)(Hash % 360) / 360.0f;
+				float S = 0.3f + (float)((Hash >> 8) % 30) / 100.0f;
+				float V = 0.4f + (float)((Hash >> 16) % 20) / 100.0f;
+				return FSlateColor(FLinearColor::MakeFromHSV8(
+					(uint8)(H * 255), (uint8)(S * 255), (uint8)(V * 255)));
+			})
+			.Padding(0)
+			[
+				SNew(SBox)
+				.WidthOverride(48)
+				.HeightOverride(48)
+			]);
 
 	return SNew(STableRow<TSharedPtr<FMaterialBrowserEntry>>, OwnerTable)
 		[
 			SNew(SHorizontalBox)
 
-			// Color swatch / thumbnail indicator
+			// Texture thumbnail or color swatch
 			+ SHorizontalBox::Slot()
 			.AutoWidth()
 			.VAlign(VAlign_Center)
 			.Padding(4, 2)
 			[
-				SNew(SBorder)
-				.BorderImage(FAppStyle::GetBrush("WhiteBrush"))
-				.BorderBackgroundColor(ThumbColor)
-				.Padding(0)
-				[
-					SNew(SBox)
-					.WidthOverride(24)
-					.HeightOverride(24)
-				]
+				ThumbnailWidget
 			]
 
 			// Type badge
@@ -843,6 +850,41 @@ FSlateColor SSourceMaterialBrowser::GetSourceButtonColor(EMaterialBrowserSource 
 		return FSlateColor(FLinearColor(0.2f, 0.4f, 0.8f, 1.0f));
 	}
 	return FSlateColor(FLinearColor(0.15f, 0.15f, 0.15f, 1.0f));
+}
+
+void SSourceMaterialBrowser::EnsureThumbnail(TSharedPtr<FMaterialBrowserEntry> Entry)
+{
+	if (!Entry.IsValid() || Entry->bThumbnailLoaded) return;
+	Entry->bThumbnailLoaded = true;
+
+	// 1. Try the UE texture already stored on the entry (imported/custom materials)
+	if (Entry->UETexture.IsValid())
+	{
+		Entry->ThumbnailBrush = CreateBrushFromTexture(Entry->UETexture.Get());
+		return;
+	}
+
+	// 2. For stock materials, try to load VTF from VPK on demand
+	if (Entry->Type == ESourceMaterialType::Stock)
+	{
+		UTexture2D* ThumbTex = FMaterialImporter::LoadThumbnailTexture(Entry->SourcePath);
+		if (ThumbTex)
+		{
+			Entry->UETexture = ThumbTex;
+			Entry->ThumbnailBrush = CreateBrushFromTexture(ThumbTex);
+		}
+	}
+}
+
+TSharedPtr<FSlateBrush> SSourceMaterialBrowser::CreateBrushFromTexture(UTexture2D* Texture)
+{
+	if (!Texture) return nullptr;
+
+	TSharedPtr<FSlateBrush> Brush = MakeShared<FSlateBrush>();
+	Brush->SetResourceObject(Texture);
+	Brush->ImageSize = FVector2D(48, 48);
+	Brush->DrawAs = ESlateBrushDrawType::Image;
+	return Brush;
 }
 
 // ============================================================================

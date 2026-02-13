@@ -26,6 +26,7 @@
 // Static member initialization
 TMap<FString, UMaterialInterface*> FMaterialImporter::MaterialCache;
 TMap<FString, FMaterialImporter::FTextureCacheEntry> FMaterialImporter::TextureInfoCache;
+TMap<FString, TWeakObjectPtr<UTexture2D>> FMaterialImporter::ThumbnailCache;
 TMap<FString, FString> FMaterialImporter::ReverseToolMappings;
 FString FMaterialImporter::AssetSearchPath;
 TArray<FString> FMaterialImporter::AdditionalSearchPaths;
@@ -1282,6 +1283,70 @@ TArray<FString> FMaterialImporter::GetStockMaterialDirectories()
 	TArray<FString> Result = UniqueDirs.Array();
 	Result.Sort();
 	return Result;
+}
+
+UTexture2D* FMaterialImporter::LoadThumbnailTexture(const FString& SourceMaterialPath)
+{
+	FString Key = SourceMaterialPath.ToLower();
+
+	// Check cache first
+	if (TWeakObjectPtr<UTexture2D>* Cached = ThumbnailCache.Find(Key))
+	{
+		if (Cached->IsValid())
+		{
+			return Cached->Get();
+		}
+	}
+
+	EnsureVPKArchivesLoaded();
+
+	// First try: the material path itself might be the texture path
+	// Most materials have $basetexture matching the material name
+	FString TexturePath = SourceMaterialPath;
+
+	// Try to find and parse the VMT to get the actual $basetexture
+	FString VMTContent = FindVMTInVPK(SourceMaterialPath);
+	if (!VMTContent.IsEmpty())
+	{
+		FVMTParsedMaterial VMT = ParseVMT(VMTContent);
+		FString BaseTex = VMT.GetBaseTexture();
+		if (!BaseTex.IsEmpty())
+		{
+			TexturePath = BaseTex;
+		}
+	}
+
+	// Try to read the VTF from VPK
+	TArray<uint8> VTFData;
+	if (!FindVTFBytesFromVPK(TexturePath, VTFData))
+	{
+		// Also try the original material path as texture path
+		if (TexturePath != SourceMaterialPath)
+		{
+			FindVTFBytesFromVPK(SourceMaterialPath, VTFData);
+		}
+	}
+
+	if (VTFData.Num() == 0)
+	{
+		ThumbnailCache.Add(Key, nullptr);
+		return nullptr;
+	}
+
+	// Decode VTF to a transient UTexture2D
+	UTexture2D* Texture = FVTFReader::LoadVTFFromMemory(VTFData, SourceMaterialPath);
+	if (Texture)
+	{
+		// Prevent GC from collecting this while we reference it
+		Texture->AddToRoot();
+		ThumbnailCache.Add(Key, Texture);
+	}
+	else
+	{
+		ThumbnailCache.Add(Key, nullptr);
+	}
+
+	return Texture;
 }
 
 FLinearColor FMaterialImporter::ColorFromName(const FString& Name)

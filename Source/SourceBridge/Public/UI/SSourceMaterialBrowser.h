@@ -4,6 +4,7 @@
 #include "Widgets/SCompoundWidget.h"
 #include "Widgets/Views/SListView.h"
 #include "Widgets/Views/STreeView.h"
+#include "Styling/SlateBrush.h"
 #include "Materials/SourceMaterialManifest.h"
 
 /** Type of material source for filtering. */
@@ -41,6 +42,12 @@ struct FMaterialBrowserEntry
 
 	/** Whether this is in the manifest */
 	bool bInManifest = false;
+
+	/** Thumbnail slate brush (created lazily from UETexture or VTF decode) */
+	TSharedPtr<FSlateBrush> ThumbnailBrush;
+
+	/** Whether we've attempted to load the thumbnail */
+	bool bThumbnailLoaded = false;
 };
 
 /** A node in the category tree. */
@@ -120,6 +127,8 @@ private:
 
 	FText GetStatusText() const;
 	FSlateColor GetSourceButtonColor(EMaterialBrowserSource Source) const;
+	void EnsureThumbnail(TSharedPtr<FMaterialBrowserEntry> Entry);
+	static TSharedPtr<FSlateBrush> CreateBrushFromTexture(UTexture2D* Texture);
 };
 
 /**

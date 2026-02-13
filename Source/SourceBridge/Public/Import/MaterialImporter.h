@@ -90,6 +90,13 @@ public:
 	/** Get all unique material directories from VPK archives (e.g. "materials/concrete"). */
 	static TArray<FString> GetStockMaterialDirectories();
 
+	/**
+	 * Load a thumbnail texture for a Source material path.
+	 * Looks up the VMT's $basetexture, reads VTF from VPK, creates a transient UTexture2D.
+	 * Results are cached. Returns nullptr if VTF not found.
+	 */
+	static UTexture2D* LoadThumbnailTexture(const FString& SourceMaterialPath);
+
 private:
 	/** Runtime pointer cache (Source path → loaded persistent UMaterialInterface*) */
 	static TMap<FString, UMaterialInterface*> MaterialCache;
@@ -101,6 +108,9 @@ private:
 		bool bHasAlpha = false;
 	};
 	static TMap<FString, FTextureCacheEntry> TextureInfoCache;
+
+	/** Thumbnail texture cache (Source material path → transient UTexture2D) */
+	static TMap<FString, TWeakObjectPtr<UTexture2D>> ThumbnailCache;
 
 	/** Reverse tool texture mapping (Source path → UE tool material name) */
 	static TMap<FString, FString> ReverseToolMappings;
