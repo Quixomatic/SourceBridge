@@ -39,6 +39,11 @@ private:
 		ASourceEntityActor* Actor,
 		const FFGDEntityClass& Resolved);
 
+	/** Build per-face material assignment widgets for brush entities. */
+	void BuildFaceMaterialWidgets(
+		IDetailLayoutBuilder& DetailBuilder,
+		class ASourceBrushEntity* BrushActor);
+
 	/** Cached weak pointer to the actor being customized. */
 	TWeakObjectPtr<ASourceEntityActor> CachedActor;
 };

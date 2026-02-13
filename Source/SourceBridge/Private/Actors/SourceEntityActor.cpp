@@ -504,7 +504,7 @@ void ASourceBrushEntity::RebuildGeometryFromDimensions()
 
 	// UE local space: negate Y for Source→UE handedness conversion
 	// 8 vertices of the box
-	const FVector V000(-HX, -HY, -HZ); // Source (-HX, +HY, -HZ) → UE negate Y
+	const FVector V000(-HX, -HY, -HZ);
 	const FVector V001(-HX, -HY,  HZ);
 	const FVector V010(-HX,  HY, -HZ);
 	const FVector V011(-HX,  HY,  HZ);
@@ -534,60 +534,112 @@ void ASourceBrushEntity::RebuildGeometryFromDimensions()
 	// Left (-Y)
 	Faces.Add({{V000, V001, V101, V100}, FVector(0, -1, 0)});
 
-	// Get the material to use
-	FString MatPath = (StoredBrushData.Num() > 0 && StoredBrushData[0].Sides.Num() > 0)
-		? StoredBrushData[0].Sides[0].Material
-		: GetDefaultMaterialForClassname();
-
-	UMaterialInterface* Material = FMaterialImporter::ResolveSourceMaterial(MatPath);
-
 	UProceduralMeshComponent* ProcMesh = NewObject<UProceduralMeshComponent>(this, TEXT("BrushMesh_0"));
 	ProcMesh->AttachToComponent(RootComponent, FAttachmentTransformRules::KeepRelativeTransform);
 	ProcMesh->SetRelativeTransform(FTransform::Identity);
 
-	// Build all faces into a single mesh section (same material on all faces)
-	TArray<FVector> Vertices;
-	TArray<int32> Triangles;
-	TArray<FVector> Normals;
-	TArray<FVector2D> UVs;
+	// One mesh section per face for per-face material support
+	const FString DefaultMat = GetDefaultMaterialForClassname();
+	const TArray<FImportedSideData>& Sides = StoredBrushData[0].Sides;
 
 	for (int32 FaceIdx = 0; FaceIdx < Faces.Num(); FaceIdx++)
 	{
 		const FBoxFace& Face = Faces[FaceIdx];
-		int32 BaseVert = Vertices.Num();
+
+		TArray<FVector> Vertices;
+		TArray<int32> Triangles;
+		TArray<FVector> FaceNormals;
+		TArray<FVector2D> UVs;
 
 		for (int32 i = 0; i < 4; i++)
 		{
 			Vertices.Add(Face.Verts[i]);
-			Normals.Add(Face.Normal);
+			FaceNormals.Add(Face.Normal);
 		}
 
-		// Simple UV: 0,0 → 1,1 per face
 		UVs.Add(FVector2D(0, 0));
 		UVs.Add(FVector2D(1, 0));
 		UVs.Add(FVector2D(1, 1));
 		UVs.Add(FVector2D(0, 1));
 
-		// Two triangles (CW winding)
-		Triangles.Add(BaseVert + 0);
-		Triangles.Add(BaseVert + 1);
-		Triangles.Add(BaseVert + 2);
+		Triangles.Add(0); Triangles.Add(1); Triangles.Add(2);
+		Triangles.Add(0); Triangles.Add(2); Triangles.Add(3);
 
-		Triangles.Add(BaseVert + 0);
-		Triangles.Add(BaseVert + 2);
-		Triangles.Add(BaseVert + 3);
-	}
+		ProcMesh->CreateMeshSection_LinearColor(FaceIdx, Vertices, Triangles, FaceNormals, UVs,
+			TArray<FLinearColor>(), TArray<FProcMeshTangent>(), true);
 
-	ProcMesh->CreateMeshSection_LinearColor(0, Vertices, Triangles, Normals, UVs,
-		TArray<FLinearColor>(), TArray<FProcMeshTangent>(), true);
-
-	if (Material)
-	{
-		ProcMesh->SetMaterial(0, Material);
+		// Per-face material from StoredBrushData
+		FString MatPath = Sides.IsValidIndex(FaceIdx) ? Sides[FaceIdx].Material : DefaultMat;
+		if (MatPath.IsEmpty()) MatPath = DefaultMat;
+		UMaterialInterface* Material = FMaterialImporter::ResolveSourceMaterial(MatPath);
+		if (Material)
+		{
+			ProcMesh->SetMaterial(FaceIdx, Material);
+		}
 	}
 
 	ProcMesh->RegisterComponent();
 	BrushMeshes.Add(ProcMesh);
+}
+
+void ASourceBrushEntity::SetFaceMaterial(int32 BrushIndex, int32 FaceIndex, const FString& NewMaterial)
+{
+	if (!StoredBrushData.IsValidIndex(BrushIndex)) return;
+	FImportedBrushData& Brush = StoredBrushData[BrushIndex];
+	if (!Brush.Sides.IsValidIndex(FaceIndex)) return;
+
+	Modify();
+	Brush.Sides[FaceIndex].Material = NewMaterial;
+
+	// Update the visual material on the proc mesh
+	if (BrushMeshes.IsValidIndex(BrushIndex) && BrushMeshes[BrushIndex])
+	{
+		UMaterialInterface* Mat = FMaterialImporter::ResolveSourceMaterial(NewMaterial);
+		if (Mat)
+		{
+			BrushMeshes[BrushIndex]->SetMaterial(FaceIndex, Mat);
+		}
+	}
+}
+
+void ASourceBrushEntity::SetAllFacesMaterial(int32 BrushIndex, const FString& NewMaterial)
+{
+	if (!StoredBrushData.IsValidIndex(BrushIndex)) return;
+
+	Modify();
+	for (int32 i = 0; i < StoredBrushData[BrushIndex].Sides.Num(); i++)
+	{
+		StoredBrushData[BrushIndex].Sides[i].Material = NewMaterial;
+	}
+
+	// Update all visual materials
+	if (BrushMeshes.IsValidIndex(BrushIndex) && BrushMeshes[BrushIndex])
+	{
+		UMaterialInterface* Mat = FMaterialImporter::ResolveSourceMaterial(NewMaterial);
+		if (Mat)
+		{
+			for (int32 i = 0; i < StoredBrushData[BrushIndex].Sides.Num(); i++)
+			{
+				BrushMeshes[BrushIndex]->SetMaterial(i, Mat);
+			}
+		}
+	}
+}
+
+FString ASourceBrushEntity::GetFaceLabel(int32 FaceIndex, int32 TotalFaces)
+{
+	// Standard 6-face box labels
+	if (TotalFaces == 6)
+	{
+		static const TCHAR* Labels[] = {
+			TEXT("Top"), TEXT("Bottom"), TEXT("Front"), TEXT("Back"), TEXT("Right"), TEXT("Left")
+		};
+		if (FaceIndex >= 0 && FaceIndex < 6)
+		{
+			return Labels[FaceIndex];
+		}
+	}
+	return FString::Printf(TEXT("Face %d"), FaceIndex);
 }
 
 #if WITH_EDITOR

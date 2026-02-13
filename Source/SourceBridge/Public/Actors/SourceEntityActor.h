@@ -302,6 +302,18 @@ public:
 	 */
 	void RebuildGeometryFromDimensions();
 
+	/**
+	 * Set the material for a specific face (by index into StoredBrushData[0].Sides).
+	 * Updates both the stored data and the visible proc mesh material.
+	 */
+	void SetFaceMaterial(int32 BrushIndex, int32 FaceIndex, const FString& NewMaterial);
+
+	/** Set all faces of a brush to the same material. */
+	void SetAllFacesMaterial(int32 BrushIndex, const FString& NewMaterial);
+
+	/** Get a human-readable label for a face index (Top, Bottom, Front, Back, Left, Right for 6-face boxes). */
+	static FString GetFaceLabel(int32 FaceIndex, int32 TotalFaces);
+
 private:
 	/** Get the default Source material path for this entity's classname. */
 	FString GetDefaultMaterialForClassname() const;

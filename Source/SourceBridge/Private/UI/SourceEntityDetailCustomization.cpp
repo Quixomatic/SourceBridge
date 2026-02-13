@@ -133,6 +133,12 @@ void FSourceEntityDetailCustomization::CustomizeDetails(IDetailLayoutBuilder& De
 		}
 	}
 
+	// Build per-face material UI for brush entities
+	if (ASourceBrushEntity* BrushActor = Cast<ASourceBrushEntity>(SourceActor))
+	{
+		BuildFaceMaterialWidgets(DetailBuilder, BrushActor);
+	}
+
 	// Reorder subclass-specific categories to appear after Source Entity
 	DetailBuilder.EditCategory(TEXT("Source Trigger"), FText::GetEmpty(), ECategoryPriority::TypeSpecific);
 	DetailBuilder.EditCategory(TEXT("Source Light"), FText::GetEmpty(), ECategoryPriority::TypeSpecific);
@@ -551,6 +557,101 @@ void FSourceEntityDetailCustomization::BuildFGDPropertyWidgets(
 					.AutoWrapText(true)
 				];
 		}
+	}
+}
+
+void FSourceEntityDetailCustomization::BuildFaceMaterialWidgets(
+	IDetailLayoutBuilder& DetailBuilder,
+	ASourceBrushEntity* BrushActor)
+{
+	if (!BrushActor || BrushActor->StoredBrushData.Num() == 0) return;
+
+	IDetailCategoryBuilder& FaceCategory = DetailBuilder.EditCategory(
+		TEXT("Face Materials"),
+		LOCTEXT("FaceMaterialsCategory", "Face Materials"),
+		ECategoryPriority::Default);
+
+	TWeakObjectPtr<ASourceBrushEntity> WeakBrush = BrushActor;
+
+	for (int32 BrushIdx = 0; BrushIdx < BrushActor->StoredBrushData.Num(); BrushIdx++)
+	{
+		const FImportedBrushData& Brush = BrushActor->StoredBrushData[BrushIdx];
+
+		// Header for multi-solid entities
+		if (BrushActor->StoredBrushData.Num() > 1)
+		{
+			FaceCategory.AddCustomRow(FText::FromString(FString::Printf(TEXT("Solid %d"), BrushIdx)))
+				.WholeRowContent()
+				[
+					SNew(STextBlock)
+					.Text(FText::FromString(FString::Printf(TEXT("Solid %d (%d faces)"), BrushIdx, Brush.Sides.Num())))
+					.Font(IDetailLayoutBuilder::GetDetailFontBold())
+				];
+		}
+
+		int32 TotalFaces = Brush.Sides.Num();
+		for (int32 FaceIdx = 0; FaceIdx < TotalFaces; FaceIdx++)
+		{
+			FString Label = ASourceBrushEntity::GetFaceLabel(FaceIdx, TotalFaces);
+			int32 CapturedBrushIdx = BrushIdx;
+			int32 CapturedFaceIdx = FaceIdx;
+
+			FaceCategory.AddCustomRow(FText::FromString(Label))
+				.NameContent()
+				[
+					SNew(STextBlock)
+					.Text(FText::FromString(Label))
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+				]
+				.ValueContent()
+				.MinDesiredWidth(200.0f)
+				[
+					SNew(SEditableTextBox)
+					.Font(IDetailLayoutBuilder::GetDetailFont())
+					.Text_Lambda([WeakBrush, CapturedBrushIdx, CapturedFaceIdx]() -> FText
+					{
+						if (ASourceBrushEntity* B = WeakBrush.Get())
+						{
+							if (B->StoredBrushData.IsValidIndex(CapturedBrushIdx) &&
+								B->StoredBrushData[CapturedBrushIdx].Sides.IsValidIndex(CapturedFaceIdx))
+							{
+								return FText::FromString(B->StoredBrushData[CapturedBrushIdx].Sides[CapturedFaceIdx].Material);
+							}
+						}
+						return FText::GetEmpty();
+					})
+					.OnTextCommitted_Lambda([WeakBrush, CapturedBrushIdx, CapturedFaceIdx](const FText& NewText, ETextCommit::Type)
+					{
+						if (ASourceBrushEntity* B = WeakBrush.Get())
+						{
+							B->SetFaceMaterial(CapturedBrushIdx, CapturedFaceIdx, NewText.ToString());
+						}
+					})
+				];
+		}
+
+		// "Apply to All Faces" button per solid
+		int32 CapturedBrushIdx = BrushIdx;
+		FaceCategory.AddCustomRow(LOCTEXT("ApplyAll", "Apply to All"))
+			.ValueContent()
+			[
+				SNew(SButton)
+				.Text(LOCTEXT("ApplyAllButton", "Apply to All Faces"))
+				.ToolTipText(LOCTEXT("ApplyAllTooltip", "Set all faces to the same material as the Top/first face"))
+				.OnClicked_Lambda([WeakBrush, CapturedBrushIdx]() -> FReply
+				{
+					if (ASourceBrushEntity* B = WeakBrush.Get())
+					{
+						if (B->StoredBrushData.IsValidIndex(CapturedBrushIdx) &&
+							B->StoredBrushData[CapturedBrushIdx].Sides.Num() > 0)
+						{
+							FString FirstMat = B->StoredBrushData[CapturedBrushIdx].Sides[0].Material;
+							B->SetAllFacesMaterial(CapturedBrushIdx, FirstMat);
+						}
+					}
+					return FReply::Handled();
+				})
+			];
 	}
 }
 
