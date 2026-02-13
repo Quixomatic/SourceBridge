@@ -146,6 +146,9 @@ private:
 	/** Initialize reverse mappings if not already done. */
 	static void EnsureReverseToolMappings();
 
+	/** Lazily initialize VPK archives if not already loaded. Uses TargetGame from settings. */
+	static void EnsureVPKArchivesLoaded();
+
 	/** Opened VPK archives for game material access. */
 	static TArray<TSharedPtr<FVPKReader>> VPKArchives;
 

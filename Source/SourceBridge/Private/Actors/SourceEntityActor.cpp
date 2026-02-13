@@ -383,6 +383,22 @@ void ASourceBrushEntity::GenerateDefaultGeometry()
 
 	bIsGeneratedGeometry = true;
 
+	// Override default dimensions for specific entity types
+	const FString& CN = SourceClassname;
+	if (CN.Equals(TEXT("func_door"), ESearchCase::IgnoreCase) ||
+		CN.Equals(TEXT("func_door_rotating"), ESearchCase::IgnoreCase))
+	{
+		BrushDimensions = FVector(32.0, 64.0, 128.0);
+	}
+	else if (CN.Equals(TEXT("func_areaportal"), ESearchCase::IgnoreCase))
+	{
+		BrushDimensions = FVector(64.0, 64.0, 2.0);
+	}
+	else if (CN.Equals(TEXT("func_conveyor"), ESearchCase::IgnoreCase))
+	{
+		BrushDimensions = FVector(128.0, 32.0, 4.0);
+	}
+
 	// Half-extents in Source units
 	const double HX = BrushDimensions.X * 0.5;
 	const double HY = BrushDimensions.Y * 0.5;

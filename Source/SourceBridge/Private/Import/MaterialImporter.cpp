@@ -2,6 +2,7 @@
 #include "Import/VTFReader.h"
 #include "Import/VPKReader.h"
 #include "Compile/CompilePipeline.h"
+#include "UI/SourceBridgeSettings.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -342,6 +343,28 @@ void FMaterialImporter::EnsureReverseToolMappings()
 	ReverseToolMappings.Add(TEXT("TOOLS/TOOLSBLACK"), TEXT("Tool_Black"));
 }
 
+void FMaterialImporter::EnsureVPKArchivesLoaded()
+{
+	// Already loaded — nothing to do
+	if (VPKArchives.Num() > 0 || AdditionalSearchPaths.Num() > 0)
+	{
+		return;
+	}
+
+	// Use the target game from settings (defaults to "cstrike")
+	FString GameName = TEXT("cstrike");
+	if (USourceBridgeSettings* Settings = USourceBridgeSettings::Get())
+	{
+		if (!Settings->TargetGame.IsEmpty())
+		{
+			GameName = Settings->TargetGame;
+		}
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Lazy-loading VPK archives for game '%s'..."), *GameName);
+	SetupGameSearchPaths(GameName);
+}
+
 UMaterialInterface* FMaterialImporter::ResolveSourceMaterial(const FString& SourceMaterialPath)
 {
 	if (SourceMaterialPath.IsEmpty()) return nullptr;
@@ -353,6 +376,9 @@ UMaterialInterface* FMaterialImporter::ResolveSourceMaterial(const FString& Sour
 	{
 		return *Found;
 	}
+
+	// Lazily load VPK archives if not yet initialized
+	EnsureVPKArchivesLoaded();
 
 	UMaterialInterface* Material = nullptr;
 
