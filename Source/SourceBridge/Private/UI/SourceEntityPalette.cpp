@@ -219,6 +219,15 @@ FReply SSourceEntityPalette::OnSpawnEntity(TSharedPtr<FEntityPaletteEntry> Entry
 		NewActor->UpdateEditorSprite();
 #endif
 
+		// For SolidClass entities, generate default box geometry so it's immediately visible
+		if (Entry->bIsSolid)
+		{
+			if (ASourceBrushEntity* BrushEntity = Cast<ASourceBrushEntity>(NewActor))
+			{
+				BrushEntity->GenerateDefaultGeometry();
+			}
+		}
+
 		// Select the newly spawned actor
 		GEditor->SelectNone(true, true, false);
 		GEditor->SelectActor(NewActor, true, true, true);

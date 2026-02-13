@@ -270,6 +270,14 @@ public:
 	ASourceBrushEntity();
 	virtual void BeginPlay() override;
 
+#if WITH_EDITOR
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
+
+	/** Brush dimensions in Source units (default 64x64x64). Only used for newly created brush entities. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Brush Geometry", meta = (DisplayName = "Dimensions (Source Units)"))
+	FVector BrushDimensions = FVector(64.0, 64.0, 64.0);
+
 	/** Procedural mesh components for each solid in this brush entity. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Source Brush Entity")
 	TArray<TObjectPtr<UProceduralMeshComponent>> BrushMeshes;
@@ -280,6 +288,26 @@ public:
 
 	/** Add a ProceduralMeshComponent to this entity (called by VMFImporter). */
 	UProceduralMeshComponent* AddBrushMesh(const FString& MeshName);
+
+	/**
+	 * Generate default box geometry from BrushDimensions and SourceClassname.
+	 * Creates StoredBrushData with 6 faces and builds a ProceduralMeshComponent.
+	 * Material is chosen by classname (TOOLSTRIGGER for triggers, TOOLSPLAYERCLIP for clips, etc.)
+	 */
+	void GenerateDefaultGeometry();
+
+	/**
+	 * Rebuild the ProceduralMeshComponent from current BrushDimensions.
+	 * Preserves per-face materials if they exist, otherwise uses defaults.
+	 */
+	void RebuildGeometryFromDimensions();
+
+private:
+	/** Get the default Source material path for this entity's classname. */
+	FString GetDefaultMaterialForClassname() const;
+
+	/** Whether this entity's geometry was generated (vs imported). Generated geometry rebuilds on dimension change. */
+	bool bIsGeneratedGeometry = false;
 };
 
 /**

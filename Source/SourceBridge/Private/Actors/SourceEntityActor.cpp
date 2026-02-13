@@ -1,5 +1,7 @@
 #include "Actors/SourceEntityActor.h"
 #include "Utilities/ToolTextureClassifier.h"
+#include "Utilities/SourceCoord.h"
+#include "Import/MaterialImporter.h"
 #include "UI/SourceIOVisualizer.h"
 #include "Components/BillboardComponent.h"
 #include "Components/ArrowComponent.h"
@@ -357,6 +359,245 @@ void ASourceBrushEntity::BeginPlay()
 		}
 	}
 }
+
+FString ASourceBrushEntity::GetDefaultMaterialForClassname() const
+{
+	const FString& CN = SourceClassname;
+	if (CN.StartsWith(TEXT("trigger_")))
+		return TEXT("TOOLS/TOOLSTRIGGER");
+	if (CN.Equals(TEXT("func_clip_vphysics"), ESearchCase::IgnoreCase) ||
+		CN.Equals(TEXT("func_clip"), ESearchCase::IgnoreCase))
+		return TEXT("TOOLS/TOOLSPLAYERCLIP");
+	if (CN.Equals(TEXT("func_areaportal"), ESearchCase::IgnoreCase))
+		return TEXT("TOOLS/TOOLSAREAPORTAL");
+	if (CN.Equals(TEXT("func_viscluster"), ESearchCase::IgnoreCase))
+		return TEXT("TOOLS/TOOLSSKIP");
+	return TEXT("TOOLS/TOOLSNODRAW");
+}
+
+void ASourceBrushEntity::GenerateDefaultGeometry()
+{
+	// Don't regenerate if we already have imported geometry
+	if (StoredBrushData.Num() > 0)
+		return;
+
+	bIsGeneratedGeometry = true;
+
+	// Half-extents in Source units
+	const double HX = BrushDimensions.X * 0.5;
+	const double HY = BrushDimensions.Y * 0.5;
+	const double HZ = BrushDimensions.Z * 0.5;
+
+	const FString DefaultMat = GetDefaultMaterialForClassname();
+
+	// Build 6 faces as FImportedSideData with plane points in Source coordinates.
+	// VMF convention: (P2-P1)x(P3-P1) points INWARD into the solid.
+	// Each face's 3 plane points are CW when viewed from outside.
+	FImportedBrushData BrushData;
+	BrushData.SolidId = 0;
+
+	auto MakeSide = [&](const FVector& P1, const FVector& P2, const FVector& P3) -> FImportedSideData
+	{
+		FImportedSideData Side;
+		Side.PlaneP1 = P1;
+		Side.PlaneP2 = P2;
+		Side.PlaneP3 = P3;
+		Side.Material = DefaultMat;
+		Side.UAxisStr = TEXT("[1 0 0 0] 0.25");
+		Side.VAxisStr = TEXT("[0 -1 0 0] 0.25");
+		Side.LightmapScale = 16;
+		return Side;
+	};
+
+	// Top face (Z+): normal points down (inward). CW from outside (looking down at top):
+	BrushData.Sides.Add(MakeSide(
+		FVector(-HX,  HY, HZ), FVector( HX,  HY, HZ), FVector( HX, -HY, HZ)));
+
+	// Bottom face (Z-): normal points up (inward). CW from outside (looking up at bottom):
+	BrushData.Sides.Add(MakeSide(
+		FVector(-HX, -HY, -HZ), FVector( HX, -HY, -HZ), FVector( HX,  HY, -HZ)));
+
+	// Front face (X+): normal points -X (inward).
+	BrushData.Sides.Add(MakeSide(
+		FVector( HX, -HY, -HZ), FVector( HX, -HY,  HZ), FVector( HX,  HY,  HZ)));
+
+	// Back face (X-): normal points +X (inward).
+	BrushData.Sides.Add(MakeSide(
+		FVector(-HX,  HY, -HZ), FVector(-HX,  HY,  HZ), FVector(-HX, -HY,  HZ)));
+
+	// Right face (Y+): normal points -Y (inward).
+	BrushData.Sides.Add(MakeSide(
+		FVector( HX,  HY, -HZ), FVector( HX,  HY,  HZ), FVector(-HX,  HY,  HZ)));
+
+	// Left face (Y-): normal points +Y (inward).
+	BrushData.Sides.Add(MakeSide(
+		FVector(-HX, -HY, -HZ), FVector(-HX, -HY,  HZ), FVector( HX, -HY,  HZ)));
+
+	StoredBrushData.Empty();
+	StoredBrushData.Add(MoveTemp(BrushData));
+
+	// Now build the visual ProceduralMeshComponent from StoredBrushData.
+	// We generate a simple box mesh in UE local space (centered at origin).
+	RebuildGeometryFromDimensions();
+}
+
+void ASourceBrushEntity::RebuildGeometryFromDimensions()
+{
+	// Clear existing meshes
+	for (UProceduralMeshComponent* Mesh : BrushMeshes)
+	{
+		if (Mesh)
+		{
+			Mesh->DestroyComponent();
+		}
+	}
+	BrushMeshes.Empty();
+
+	if (StoredBrushData.Num() == 0)
+		return;
+
+	// Regenerate StoredBrushData planes from dimensions if this is generated geometry
+	if (bIsGeneratedGeometry && StoredBrushData.Num() == 1 && StoredBrushData[0].Sides.Num() == 6)
+	{
+		const double HX = BrushDimensions.X * 0.5;
+		const double HY = BrushDimensions.Y * 0.5;
+		const double HZ = BrushDimensions.Z * 0.5;
+
+		auto UpdatePlane = [](FImportedSideData& Side, const FVector& P1, const FVector& P2, const FVector& P3)
+		{
+			Side.PlaneP1 = P1;
+			Side.PlaneP2 = P2;
+			Side.PlaneP3 = P3;
+		};
+
+		TArray<FImportedSideData>& Sides = StoredBrushData[0].Sides;
+		UpdatePlane(Sides[0], FVector(-HX,  HY, HZ), FVector( HX,  HY, HZ), FVector( HX, -HY, HZ));
+		UpdatePlane(Sides[1], FVector(-HX, -HY, -HZ), FVector( HX, -HY, -HZ), FVector( HX,  HY, -HZ));
+		UpdatePlane(Sides[2], FVector( HX, -HY, -HZ), FVector( HX, -HY,  HZ), FVector( HX,  HY,  HZ));
+		UpdatePlane(Sides[3], FVector(-HX,  HY, -HZ), FVector(-HX,  HY,  HZ), FVector(-HX, -HY,  HZ));
+		UpdatePlane(Sides[4], FVector( HX,  HY, -HZ), FVector( HX,  HY,  HZ), FVector(-HX,  HY,  HZ));
+		UpdatePlane(Sides[5], FVector(-HX, -HY, -HZ), FVector(-HX, -HY,  HZ), FVector( HX, -HY,  HZ));
+	}
+
+	// Build a simple box ProceduralMeshComponent from the dimensions.
+	// Convert Source units to UE units for the local-space mesh.
+	const double Scale = 1.0 / FSourceCoord::ScaleFactor; // Source units → UE units
+	const double HX = BrushDimensions.X * 0.5 * Scale;
+	const double HY = BrushDimensions.Y * 0.5 * Scale;
+	const double HZ = BrushDimensions.Z * 0.5 * Scale;
+
+	// UE local space: negate Y for Source→UE handedness conversion
+	// 8 vertices of the box
+	const FVector V000(-HX, -HY, -HZ); // Source (-HX, +HY, -HZ) → UE negate Y
+	const FVector V001(-HX, -HY,  HZ);
+	const FVector V010(-HX,  HY, -HZ);
+	const FVector V011(-HX,  HY,  HZ);
+	const FVector V100( HX, -HY, -HZ);
+	const FVector V101( HX, -HY,  HZ);
+	const FVector V110( HX,  HY, -HZ);
+	const FVector V111( HX,  HY,  HZ);
+
+	// 6 faces, each a quad (4 verts, 2 triangles)
+	struct FBoxFace
+	{
+		FVector Verts[4]; // CW winding for outward-facing normal
+		FVector Normal;
+	};
+
+	TArray<FBoxFace> Faces;
+	// Top (+Z)
+	Faces.Add({{V011, V111, V101, V001}, FVector(0, 0, 1)});
+	// Bottom (-Z)
+	Faces.Add({{V000, V100, V110, V010}, FVector(0, 0, -1)});
+	// Front (+X)
+	Faces.Add({{V100, V101, V111, V110}, FVector(1, 0, 0)});
+	// Back (-X)
+	Faces.Add({{V010, V011, V001, V000}, FVector(-1, 0, 0)});
+	// Right (+Y)
+	Faces.Add({{V110, V111, V011, V010}, FVector(0, 1, 0)});
+	// Left (-Y)
+	Faces.Add({{V000, V001, V101, V100}, FVector(0, -1, 0)});
+
+	// Get the material to use
+	FString MatPath = (StoredBrushData.Num() > 0 && StoredBrushData[0].Sides.Num() > 0)
+		? StoredBrushData[0].Sides[0].Material
+		: GetDefaultMaterialForClassname();
+
+	UMaterialInterface* Material = FMaterialImporter::ResolveSourceMaterial(MatPath);
+
+	UProceduralMeshComponent* ProcMesh = NewObject<UProceduralMeshComponent>(this, TEXT("BrushMesh_0"));
+	ProcMesh->AttachToComponent(RootComponent, FAttachmentTransformRules::KeepRelativeTransform);
+	ProcMesh->SetRelativeTransform(FTransform::Identity);
+
+	// Build all faces into a single mesh section (same material on all faces)
+	TArray<FVector> Vertices;
+	TArray<int32> Triangles;
+	TArray<FVector> Normals;
+	TArray<FVector2D> UVs;
+
+	for (int32 FaceIdx = 0; FaceIdx < Faces.Num(); FaceIdx++)
+	{
+		const FBoxFace& Face = Faces[FaceIdx];
+		int32 BaseVert = Vertices.Num();
+
+		for (int32 i = 0; i < 4; i++)
+		{
+			Vertices.Add(Face.Verts[i]);
+			Normals.Add(Face.Normal);
+		}
+
+		// Simple UV: 0,0 → 1,1 per face
+		UVs.Add(FVector2D(0, 0));
+		UVs.Add(FVector2D(1, 0));
+		UVs.Add(FVector2D(1, 1));
+		UVs.Add(FVector2D(0, 1));
+
+		// Two triangles (CW winding)
+		Triangles.Add(BaseVert + 0);
+		Triangles.Add(BaseVert + 1);
+		Triangles.Add(BaseVert + 2);
+
+		Triangles.Add(BaseVert + 0);
+		Triangles.Add(BaseVert + 2);
+		Triangles.Add(BaseVert + 3);
+	}
+
+	ProcMesh->CreateMeshSection_LinearColor(0, Vertices, Triangles, Normals, UVs,
+		TArray<FLinearColor>(), TArray<FProcMeshTangent>(), true);
+
+	if (Material)
+	{
+		ProcMesh->SetMaterial(0, Material);
+	}
+
+	ProcMesh->RegisterComponent();
+	BrushMeshes.Add(ProcMesh);
+}
+
+#if WITH_EDITOR
+void ASourceBrushEntity::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+	Super::PostEditChangeProperty(PropertyChangedEvent);
+
+	if (!PropertyChangedEvent.Property)
+		return;
+
+	const FName PropName = PropertyChangedEvent.Property->GetFName();
+
+	if (PropName == GET_MEMBER_NAME_CHECKED(ASourceBrushEntity, BrushDimensions))
+	{
+		// Clamp dimensions to reasonable values (minimum 1 Source unit per axis)
+		BrushDimensions.X = FMath::Max(1.0, BrushDimensions.X);
+		BrushDimensions.Y = FMath::Max(1.0, BrushDimensions.Y);
+		BrushDimensions.Z = FMath::Max(1.0, BrushDimensions.Z);
+
+		if (bIsGeneratedGeometry)
+		{
+			RebuildGeometryFromDimensions();
+		}
+	}
+}
+#endif
 
 // ---- Env Sprite ----
 
