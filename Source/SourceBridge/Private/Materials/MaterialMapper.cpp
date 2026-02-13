@@ -1,4 +1,5 @@
 #include "Materials/MaterialMapper.h"
+#include "Materials/SourceMaterialManifest.h"
 #include "Materials/MaterialInterface.h"
 
 FMaterialMapper::FMaterialMapper()
@@ -14,6 +15,18 @@ FString FMaterialMapper::MapMaterial(UMaterialInterface* Material) const
 		return DefaultMaterial;
 	}
 
+	// 1. Manifest lookup — the primary resolution path for imported/registered materials
+	USourceMaterialManifest* Manifest = USourceMaterialManifest::Get();
+	if (Manifest)
+	{
+		FString SourcePath = Manifest->GetSourcePath(Material);
+		if (!SourcePath.IsEmpty())
+		{
+			return SourcePath;
+		}
+	}
+
+	// 2. Fall through to name-based mapping (overrides, tool textures)
 	return MapMaterialName(Material->GetName());
 }
 
@@ -25,13 +38,6 @@ FString FMaterialMapper::MapMaterialName(const FString& MaterialName) const
 	}
 
 	// 1. Check manual overrides first (case-insensitive)
-	const FString* Override = ManualOverrides.Find(MaterialName);
-	if (Override)
-	{
-		return *Override;
-	}
-
-	// Also try case-insensitive lookup
 	for (const auto& Pair : ManualOverrides)
 	{
 		if (Pair.Key.Equals(MaterialName, ESearchCase::IgnoreCase))
@@ -49,37 +55,8 @@ FString FMaterialMapper::MapMaterialName(const FString& MaterialName) const
 		}
 	}
 
-	// 3. Name-based auto-mapping
-	// Strip common UE prefixes (M_, MI_, Mat_) and convert to Source path style
-	FString Cleaned = MaterialName;
-
-	// Strip instance suffix
-	if (Cleaned.EndsWith(TEXT("_Inst")))
-	{
-		Cleaned = Cleaned.LeftChop(5);
-	}
-
-	// Strip common prefixes
-	if (Cleaned.StartsWith(TEXT("M_")))
-	{
-		Cleaned = Cleaned.RightChop(2);
-	}
-	else if (Cleaned.StartsWith(TEXT("MI_")))
-	{
-		Cleaned = Cleaned.RightChop(3);
-	}
-	else if (Cleaned.StartsWith(TEXT("Mat_")))
-	{
-		Cleaned = Cleaned.RightChop(4);
-	}
-
-	// Convert to lowercase Source-style path
-	Cleaned = Cleaned.ToLower();
-
-	// Replace double underscores with path separators
-	Cleaned = Cleaned.Replace(TEXT("__"), TEXT("/"));
-
-	return Cleaned;
+	// 3. Default fallback — no more broken name-based auto-mapping
+	return DefaultMaterial;
 }
 
 void FMaterialMapper::AddOverride(const FString& UEMaterialName, const FString& SourceMaterialPath)
@@ -94,8 +71,6 @@ void FMaterialMapper::SetDefaultMaterial(const FString& SourceMaterialPath)
 
 void FMaterialMapper::InitToolTextureMappings()
 {
-	// Standard Source tool textures.
-	// UE materials named with these patterns auto-map to the correct tool texture.
 	ToolTextureMappings.Add(TEXT("Tool_Nodraw"),     TEXT("TOOLS/TOOLSNODRAW"));
 	ToolTextureMappings.Add(TEXT("Tool_Clip"),        TEXT("TOOLS/TOOLSCLIP"));
 	ToolTextureMappings.Add(TEXT("Tool_PlayerClip"),  TEXT("TOOLS/TOOLSPLAYERCLIP"));

@@ -18,6 +18,20 @@ public:
 	/** Load a VTF from raw bytes in memory. DebugName is used for log messages only. */
 	static UTexture2D* LoadVTFFromMemory(const TArray<uint8>& FileData, const FString& DebugName);
 
+	/**
+	 * Decode a VTF file from raw bytes to BGRA8888 pixels (no UTexture2D created).
+	 * All VTF formats are decompressed/converted to BGRA8.
+	 * @param FileData Raw VTF file bytes
+	 * @param DebugName Name for log messages
+	 * @param OutBGRA Output BGRA8 pixel data
+	 * @param OutWidth Output texture width
+	 * @param OutHeight Output texture height
+	 * @param bOutHasAlpha True if original format has an alpha channel (DXT3/5, BGRA, RGBA, ABGR)
+	 * @return true if successful
+	 */
+	static bool DecodeToBGRA(const TArray<uint8>& FileData, const FString& DebugName,
+		TArray<uint8>& OutBGRA, int32& OutWidth, int32& OutHeight, bool& bOutHasAlpha);
+
 	/** Enable/disable debug texture dumping. When enabled, all loaded VTFs are saved as PNGs. */
 	static bool bDebugDumpTextures;
 

@@ -1,11 +1,12 @@
 #include "Import/MaterialImporter.h"
 #include "Import/VTFReader.h"
 #include "Import/VPKReader.h"
+#include "Materials/SourceMaterialManifest.h"
 #include "Compile/CompilePipeline.h"
 #include "UI/SourceBridgeSettings.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialInterface.h"
-#include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInstanceConstant.h"
 #include "Materials/MaterialExpressionConstant3Vector.h"
 #include "Materials/MaterialExpressionTextureSample.h"
 #include "Materials/MaterialExpressionTextureSampleParameter2D.h"
@@ -13,37 +14,37 @@
 #include "Materials/MaterialExpressionScalarParameter.h"
 #include "Materials/MaterialExpressionMultiply.h"
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "Engine/Texture2D.h"
 #include "Misc/FileHelper.h"
+#include "Misc/PackageName.h"
 #include "UObject/ConstructorHelpers.h"
+#include "UObject/Package.h"
+#include "UObject/SavePackage.h"
 #include "HAL/FileManager.h"
+#include "HAL/PlatformFilemanager.h"
 
+// Static member initialization
 TMap<FString, UMaterialInterface*> FMaterialImporter::MaterialCache;
-TMap<FString, FString> FMaterialImporter::ReverseToolMappings;
 TMap<FString, FMaterialImporter::FTextureCacheEntry> FMaterialImporter::TextureInfoCache;
+TMap<FString, FString> FMaterialImporter::ReverseToolMappings;
 FString FMaterialImporter::AssetSearchPath;
 TArray<FString> FMaterialImporter::AdditionalSearchPaths;
 TArray<TSharedPtr<FVPKReader>> FMaterialImporter::VPKArchives;
-UMaterial* FMaterialImporter::TextureBaseMaterial = nullptr;
-UMaterial* FMaterialImporter::MaskedBaseMaterial = nullptr;
-UMaterial* FMaterialImporter::TranslucentBaseMaterial = nullptr;
-UMaterial* FMaterialImporter::ColorBaseMaterial = nullptr;
+UMaterial* FMaterialImporter::CachedOpaqueMaterial = nullptr;
+UMaterial* FMaterialImporter::CachedMaskedMaterial = nullptr;
+UMaterial* FMaterialImporter::CachedTranslucentMaterial = nullptr;
+UMaterial* FMaterialImporter::CachedColorMaterial = nullptr;
 
-// ---- VMT Parsing ----
+// ===========================================================================
+// VMT Parsing (unchanged from original)
+// ===========================================================================
 
 FVMTParsedMaterial FMaterialImporter::ParseVMT(const FString& VMTContent)
 {
 	FVMTParsedMaterial Result;
 
-	// VMT format:
-	//   ShaderName
-	//   {
-	//       "$key" "value"
-	//   }
-	// Simplified parser - handles the common single-block case
-
 	const TCHAR* Ptr = *VMTContent;
 
-	// Skip whitespace and comments
 	auto SkipWS = [&]()
 	{
 		while (*Ptr)
@@ -54,7 +55,6 @@ FVMTParsedMaterial FMaterialImporter::ParseVMT(const FString& VMTContent)
 			}
 			else if (*Ptr == '/' && *(Ptr + 1) == '/')
 			{
-				// Line comment
 				while (*Ptr && *Ptr != '\n') Ptr++;
 			}
 			else
@@ -67,14 +67,14 @@ FVMTParsedMaterial FMaterialImporter::ParseVMT(const FString& VMTContent)
 	auto ReadQuoted = [&]() -> FString
 	{
 		if (*Ptr != '"') return FString();
-		Ptr++; // skip opening quote
+		Ptr++;
 		FString Value;
 		while (*Ptr && *Ptr != '"')
 		{
 			Value += *Ptr;
 			Ptr++;
 		}
-		if (*Ptr == '"') Ptr++; // skip closing quote
+		if (*Ptr == '"') Ptr++;
 		return Value;
 	};
 
@@ -90,7 +90,6 @@ FVMTParsedMaterial FMaterialImporter::ParseVMT(const FString& VMTContent)
 		return Token;
 	};
 
-	// Skip whitespace but NOT newlines (for reading values on the same line as their key)
 	auto SkipInlineWS = [&]()
 	{
 		while (*Ptr == ' ' || *Ptr == '\t')
@@ -99,7 +98,6 @@ FVMTParsedMaterial FMaterialImporter::ParseVMT(const FString& VMTContent)
 		}
 	};
 
-	// Read rest of line as a value (for unquoted values that may contain spaces/backslashes)
 	auto ReadRestOfLine = [&]() -> FString
 	{
 		FString Value;
@@ -107,7 +105,7 @@ FVMTParsedMaterial FMaterialImporter::ParseVMT(const FString& VMTContent)
 		{
 			if (*Ptr == '/' && *(Ptr + 1) == '/')
 			{
-				break; // Stop at line comment
+				break;
 			}
 			Value += *Ptr;
 			Ptr++;
@@ -139,7 +137,6 @@ FVMTParsedMaterial FMaterialImporter::ParseVMT(const FString& VMTContent)
 
 			if (*Ptr == '{')
 			{
-				// Nested block (like $proxies) - skip it
 				Depth++;
 				Ptr++;
 			}
@@ -150,8 +147,6 @@ FVMTParsedMaterial FMaterialImporter::ParseVMT(const FString& VMTContent)
 			}
 			else if (Depth == 1 && (*Ptr == '"' || *Ptr == '$' || *Ptr == '%' || FChar::IsAlpha(*Ptr)))
 			{
-				// Key-value pair at top level
-				// Handles: "$key" "value", "$key" value, $key "value", $key value
 				FString Key;
 				if (*Ptr == '"')
 				{
@@ -171,7 +166,6 @@ FVMTParsedMaterial FMaterialImporter::ParseVMT(const FString& VMTContent)
 				}
 				else if (*Ptr && *Ptr != '\r' && *Ptr != '\n' && *Ptr != '{' && *Ptr != '}')
 				{
-					// Unquoted value - read to end of line
 					Value = ReadRestOfLine();
 				}
 
@@ -182,16 +176,13 @@ FVMTParsedMaterial FMaterialImporter::ParseVMT(const FString& VMTContent)
 			}
 			else if (*Ptr == '"')
 			{
-				// Quoted string at non-top depth - consume it to avoid infinite loop
 				ReadQuoted();
 			}
 			else if (*Ptr)
 			{
-				// Unknown token at non-top depth, skip
 				FString Tok = ReadToken();
 				if (Tok.IsEmpty())
 				{
-					// Safety: skip character if nothing consumed
 					Ptr++;
 				}
 			}
@@ -211,7 +202,9 @@ FVMTParsedMaterial FMaterialImporter::ParseVMTFile(const FString& FilePath)
 	return FVMTParsedMaterial();
 }
 
-// ---- Asset Search Path ----
+// ===========================================================================
+// Search Path Configuration (unchanged)
+// ===========================================================================
 
 void FMaterialImporter::SetAssetSearchPath(const FString& Path)
 {
@@ -232,16 +225,12 @@ void FMaterialImporter::SetupGameSearchPaths(const FString& GameName)
 
 	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Game directory: %s"), *GameDir);
 
-	// 1. Game's root directory (contains materials/ directly)
-	//    e.g., C:/Steam/steamapps/common/Counter-Strike Source/cstrike/
 	if (FPaths::DirectoryExists(GameDir / TEXT("materials")))
 	{
 		AdditionalSearchPaths.Add(GameDir);
 		UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Added game materials path: %s"), *GameDir);
 	}
 
-	// 2. Game's custom/ folder - each subfolder can have its own materials/
-	//    e.g., cstrike/custom/my_content/materials/
 	FString CustomDir = GameDir / TEXT("custom");
 	if (FPaths::DirectoryExists(CustomDir))
 	{
@@ -258,8 +247,6 @@ void FMaterialImporter::SetupGameSearchPaths(const FString& GameName)
 		}
 	}
 
-	// 3. Download folder (community server content)
-	//    e.g., cstrike/download/materials/
 	FString DownloadDir = GameDir / TEXT("download");
 	if (FPaths::DirectoryExists(DownloadDir / TEXT("materials")))
 	{
@@ -267,23 +254,14 @@ void FMaterialImporter::SetupGameSearchPaths(const FString& GameName)
 		UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Added download materials path: %s"), *DownloadDir);
 	}
 
-	// 4. Open VPK archives for stock game materials
-	//    Source engine search order (from gameinfo.txt):
-	//      - Game dir VPKs (cstrike/cstrike_pak)
-	//      - HL2 base VPKs (hl2/hl2_textures, hl2/hl2_misc) - tool textures live here!
-	//      - Platform VPKs (platform/platform_misc)
 	VPKArchives.Empty();
+	FString EngineRoot = FPaths::GetPath(GameDir);
 
-	// Determine the engine root (parent of game dir, e.g., "Counter-Strike Source/")
-	FString EngineRoot = FPaths::GetPath(GameDir); // e.g., .../Counter-Strike Source
-
-	// Collect VPK search directories in priority order
 	TArray<FString> VPKSearchDirs;
-	VPKSearchDirs.Add(GameDir);                          // cstrike/
-	VPKSearchDirs.Add(EngineRoot / TEXT("hl2"));         // hl2/ (base content, tool textures)
-	VPKSearchDirs.Add(EngineRoot / TEXT("platform"));    // platform/
+	VPKSearchDirs.Add(GameDir);
+	VPKSearchDirs.Add(EngineRoot / TEXT("hl2"));
+	VPKSearchDirs.Add(EngineRoot / TEXT("platform"));
 
-	// Also add hl2 and platform as loose file search paths
 	FString HL2Dir = EngineRoot / TEXT("hl2");
 	if (FPaths::DirectoryExists(HL2Dir / TEXT("materials")))
 	{
@@ -299,7 +277,6 @@ void FMaterialImporter::SetupGameSearchPaths(const FString& GameName)
 		IFileManager::Get().FindFiles(VPKDirFiles, *(VPKDir / TEXT("*_dir.vpk")), true, false);
 		for (const FString& VPKFile : VPKDirFiles)
 		{
-			// Skip sound VPKs - they don't contain materials
 			if (VPKFile.Contains(TEXT("sound"))) continue;
 
 			FString FullPath = VPKDir / VPKFile;
@@ -315,17 +292,12 @@ void FMaterialImporter::SetupGameSearchPaths(const FString& GameName)
 
 	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: %d additional search paths + %d VPK archives configured"),
 		AdditionalSearchPaths.Num(), VPKArchives.Num());
-
-	UE_LOG(LogTemp, Verbose, TEXT("MaterialImporter: %d VPK archives ready for tool texture lookup"), VPKArchives.Num());
 }
-
-// ---- Material Resolution ----
 
 void FMaterialImporter::EnsureReverseToolMappings()
 {
 	if (ReverseToolMappings.Num() > 0) return;
 
-	// Build reverse mapping: Source path → UE tool material name
 	ReverseToolMappings.Add(TEXT("TOOLS/TOOLSNODRAW"), TEXT("Tool_Nodraw"));
 	ReverseToolMappings.Add(TEXT("TOOLS/TOOLSCLIP"), TEXT("Tool_Clip"));
 	ReverseToolMappings.Add(TEXT("TOOLS/TOOLSPLAYERCLIP"), TEXT("Tool_PlayerClip"));
@@ -345,13 +317,11 @@ void FMaterialImporter::EnsureReverseToolMappings()
 
 void FMaterialImporter::EnsureVPKArchivesLoaded()
 {
-	// Already loaded — nothing to do
 	if (VPKArchives.Num() > 0 || AdditionalSearchPaths.Num() > 0)
 	{
 		return;
 	}
 
-	// Use the target game from settings (defaults to "cstrike")
 	FString GameName = TEXT("cstrike");
 	if (USourceBridgeSettings* Settings = USourceBridgeSettings::Get())
 	{
@@ -365,16 +335,41 @@ void FMaterialImporter::EnsureVPKArchivesLoaded()
 	SetupGameSearchPaths(GameName);
 }
 
+// ===========================================================================
+// Material Resolution (persistent)
+// ===========================================================================
+
 UMaterialInterface* FMaterialImporter::ResolveSourceMaterial(const FString& SourceMaterialPath)
 {
 	if (SourceMaterialPath.IsEmpty()) return nullptr;
 
 	FString NormalizedPath = SourceMaterialPath.ToUpper();
 
-	// Check cache first
+	// 1. Check runtime pointer cache
 	if (UMaterialInterface** Found = MaterialCache.Find(NormalizedPath))
 	{
-		return *Found;
+		if (*Found && (*Found)->IsValidLowLevel())
+		{
+			return *Found;
+		}
+		MaterialCache.Remove(NormalizedPath);
+	}
+
+	// 2. Check manifest for existing persistent asset
+	USourceMaterialManifest* Manifest = USourceMaterialManifest::Get();
+	if (Manifest)
+	{
+		FSourceMaterialEntry* Entry = Manifest->FindBySourcePath(SourceMaterialPath);
+		if (Entry && !Entry->MaterialAsset.GetAssetPathString().IsEmpty())
+		{
+			UMaterialInterface* Loaded = Cast<UMaterialInterface>(Entry->MaterialAsset.TryLoad());
+			if (Loaded)
+			{
+				MaterialCache.Add(NormalizedPath, Loaded);
+				UE_LOG(LogTemp, Log, TEXT("MaterialImporter: '%s' -> loaded from manifest"), *SourceMaterialPath);
+				return Loaded;
+			}
+		}
 	}
 
 	// Lazily load VPK archives if not yet initialized
@@ -383,33 +378,31 @@ UMaterialInterface* FMaterialImporter::ResolveSourceMaterial(const FString& Sour
 	UMaterialInterface* Material = nullptr;
 
 	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Resolving '%s'..."), *SourceMaterialPath);
-	GLog->Flush();
 
-	// 1. Try to create from extracted VMT file or VPK archives
+	// 3. Try to create from VMT/VTF
 	if (!AssetSearchPath.IsEmpty() || AdditionalSearchPaths.Num() > 0 || VPKArchives.Num() > 0)
 	{
 		Material = CreateMaterialFromVMT(SourceMaterialPath);
 		if (Material)
 		{
-			UE_LOG(LogTemp, Log, TEXT("MaterialImporter: '%s' -> resolved via VMT/VTF"), *SourceMaterialPath);
+			UE_LOG(LogTemp, Log, TEXT("MaterialImporter: '%s' -> created persistent material from VMT/VTF"), *SourceMaterialPath);
 		}
 	}
 
-	// 2. Try to find existing UE material in asset registry
+	// 4. Try to find existing UE material in asset registry
 	if (!Material)
 	{
 		Material = FindExistingMaterial(SourceMaterialPath);
 		if (Material)
 		{
-			UE_LOG(LogTemp, Log, TEXT("MaterialImporter: '%s' -> resolved via asset registry"), *SourceMaterialPath);
+			UE_LOG(LogTemp, Log, TEXT("MaterialImporter: '%s' -> found via asset registry"), *SourceMaterialPath);
 		}
 	}
 
-	// 3. Create placeholder if not found
+	// 5. Create placeholder
 	if (!Material)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("MaterialImporter: '%s' not found in VMT/VPK/registry, creating placeholder"),
-			*SourceMaterialPath);
+		UE_LOG(LogTemp, Warning, TEXT("MaterialImporter: '%s' not found, creating placeholder"), *SourceMaterialPath);
 		Material = CreatePlaceholderMaterial(SourceMaterialPath);
 	}
 
@@ -419,8 +412,7 @@ UMaterialInterface* FMaterialImporter::ResolveSourceMaterial(const FString& Sour
 	}
 	else
 	{
-		UE_LOG(LogTemp, Warning, TEXT("MaterialImporter: FAILED to resolve material '%s' (returned nullptr)"),
-			*SourceMaterialPath);
+		UE_LOG(LogTemp, Warning, TEXT("MaterialImporter: FAILED to resolve material '%s'"), *SourceMaterialPath);
 	}
 
 	return Material;
@@ -432,10 +424,9 @@ UMaterialInterface* FMaterialImporter::FindExistingMaterial(const FString& Sourc
 
 	FString Upper = SourceMaterialPath.ToUpper();
 
-	// 1. Check reverse tool mappings
+	// Check reverse tool mappings
 	if (const FString* UEName = ReverseToolMappings.Find(Upper))
 	{
-		// Search for this material in the asset registry
 		FAssetRegistryModule& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
 		TArray<FAssetData> Assets;
 		AssetRegistry.Get().GetAssetsByClass(UMaterialInterface::StaticClass()->GetClassPathName(), Assets);
@@ -449,34 +440,12 @@ UMaterialInterface* FMaterialImporter::FindExistingMaterial(const FString& Sourc
 		}
 	}
 
-	// 2. Try converting Source path to UE material name
-	FString Cleaned = SourceMaterialPath;
-	Cleaned = Cleaned.Replace(TEXT("/"), TEXT("__"));
-	FString FileName = FPaths::GetCleanFilename(SourceMaterialPath);
-
-	FAssetRegistryModule& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
-	TArray<FAssetData> Assets;
-	AssetRegistry.Get().GetAssetsByClass(UMaterialInterface::StaticClass()->GetClassPathName(), Assets);
-
-	for (const FAssetData& Asset : Assets)
-	{
-		FString AssetName = Asset.AssetName.ToString();
-		if (AssetName.Equals(Cleaned, ESearchCase::IgnoreCase) ||
-			AssetName.Equals(TEXT("M_") + Cleaned, ESearchCase::IgnoreCase) ||
-			AssetName.Equals(TEXT("MI_") + Cleaned, ESearchCase::IgnoreCase) ||
-			AssetName.Equals(FileName, ESearchCase::IgnoreCase) ||
-			AssetName.Equals(TEXT("M_") + FileName, ESearchCase::IgnoreCase))
-		{
-			return Cast<UMaterialInterface>(Asset.GetAsset());
-		}
-	}
-
 	return nullptr;
 }
 
 UMaterialInterface* FMaterialImporter::CreateMaterialFromVMT(const FString& SourceMaterialPath)
 {
-	// Build the list of all directories to search: extracted first, then game dirs
+	// Build the list of directories to search
 	TArray<FString> SearchRoots;
 	if (!AssetSearchPath.IsEmpty())
 	{
@@ -484,7 +453,7 @@ UMaterialInterface* FMaterialImporter::CreateMaterialFromVMT(const FString& Sour
 	}
 	SearchRoots.Append(AdditionalSearchPaths);
 
-	// Search for VMT: exact disk path (fast) → VPK (fast) → case-insensitive disk (slow, last resort)
+	// ---- Find VMT ----
 	FString VMTFullPath;
 	FString VMTRelPath = TEXT("materials") / SourceMaterialPath + TEXT(".vmt");
 
@@ -501,24 +470,22 @@ UMaterialInterface* FMaterialImporter::CreateMaterialFromVMT(const FString& Sour
 		}
 	}
 
-	// 2. VPK archives (fast hash lookup)
+	// 2. VPK archives
 	FVMTParsedMaterial VMTData;
+	bool bFoundInVPK = false;
 	if (VMTFullPath.IsEmpty())
 	{
 		FString VMTContent = FindVMTInVPK(SourceMaterialPath);
 		if (!VMTContent.IsEmpty())
 		{
 			VMTData = ParseVMT(VMTContent);
+			bFoundInVPK = true;
 		}
 	}
 
-	// 3. Case-insensitive disk search (slow recursive scan, last resort)
+	// 3. Case-insensitive disk search (last resort)
 	if (VMTFullPath.IsEmpty() && VMTData.ShaderName.IsEmpty())
 	{
-		UE_LOG(LogTemp, Warning, TEXT("MaterialImporter: SLOW PATH - recursive VMT scan for '%s' (%d search roots)"),
-			*SourceMaterialPath, SearchRoots.Num());
-		GLog->Flush();
-
 		FString SearchPath = SourceMaterialPath + TEXT(".vmt");
 		SearchPath = SearchPath.Replace(TEXT("\\"), TEXT("/"));
 
@@ -564,14 +531,7 @@ UMaterialInterface* FMaterialImporter::CreateMaterialFromVMT(const FString& Sour
 		return nullptr;
 	}
 
-	FString VMTSource = VMTFullPath.IsEmpty() ? TEXT("VPK") : VMTFullPath;
-	UE_LOG(LogTemp, Verbose, TEXT("MaterialImporter: Parsed VMT '%s' (from %s) - shader: %s, basetexture: %s, params=%d"),
-		*SourceMaterialPath, *VMTSource, *VMTData.ShaderName, *VMTData.GetBaseTexture(), VMTData.Parameters.Num());
-
-	// Determine alpha mode from VMT shader parameters
-	// $translucent = smooth partial opacity (BLEND_Translucent)
-	// $alphatest   = binary alpha test (BLEND_Masked)
-	// $nocull alone doesn't imply alpha - just two-sided rendering
+	// ---- Determine alpha mode ----
 	ESourceAlphaMode AlphaMode = ESourceAlphaMode::Opaque;
 	if (VMTData.IsTranslucent())
 	{
@@ -582,47 +542,90 @@ UMaterialInterface* FMaterialImporter::CreateMaterialFromVMT(const FString& Sour
 		AlphaMode = ESourceAlphaMode::Masked;
 	}
 
-	// Try to load the $basetexture as a VTF file
+	// ---- Load base texture ----
 	FString BaseTexturePath = VMTData.GetBaseTexture();
+	UTexture2D* BaseTexture = nullptr;
+
 	if (!BaseTexturePath.IsEmpty())
 	{
-		UTexture2D* Texture = FindAndLoadVTF(BaseTexturePath);
-		if (Texture)
+		TArray<uint8> VTFBytes;
+		if (FindVTFBytes(BaseTexturePath, VTFBytes))
 		{
-			int32 TexW = Texture->GetSizeX();
-			int32 TexH = Texture->GetSizeY();
-
-			// Only use texture format for alpha detection if VMT didn't already specify
-			// (many DXT5 textures use alpha for specular/gloss, not transparency)
-			if (AlphaMode == ESourceAlphaMode::Opaque)
+			TArray<uint8> BGRAData;
+			int32 TexW, TexH;
+			bool bHasAlpha;
+			if (FVTFReader::DecodeToBGRA(VTFBytes, BaseTexturePath, BGRAData, TexW, TexH, bHasAlpha))
 			{
-				EPixelFormat PixFmt = Texture->GetPixelFormat();
-				bool bTextureHasAlpha = (PixFmt == PF_DXT5 || PixFmt == PF_DXT3
-					|| PixFmt == PF_B8G8R8A8 || PixFmt == PF_R8G8B8A8);
-				if (bTextureHasAlpha && VMTData.Parameters.Contains(TEXT("$nocull")))
+				// Refine alpha mode: $nocull + alpha format → likely masked
+				if (AlphaMode == ESourceAlphaMode::Opaque && bHasAlpha
+					&& VMTData.Parameters.Contains(TEXT("$nocull")))
 				{
-					// $nocull + alpha-capable format is a strong hint for masked rendering
-					// (e.g., foliage, fences)
 					AlphaMode = ESourceAlphaMode::Masked;
 				}
+
+				// Cache texture info for UV normalization
+				FTextureCacheEntry CacheEntry;
+				CacheEntry.Size = FIntPoint(TexW, TexH);
+				CacheEntry.bHasAlpha = bHasAlpha;
+				TextureInfoCache.Add(SourceMaterialPath.ToUpper(), CacheEntry);
+
+				BaseTexture = CreatePersistentTexture(BGRAData, TexW, TexH, BaseTexturePath, false);
 			}
-
-			const TCHAR* AlphaModeStr = AlphaMode == ESourceAlphaMode::Translucent ? TEXT("translucent")
-				: AlphaMode == ESourceAlphaMode::Masked ? TEXT("masked") : TEXT("opaque");
-			UE_LOG(LogTemp, Verbose, TEXT("MaterialImporter: Loaded VTF texture '%s' (%dx%d, mode=%s)"),
-				*BaseTexturePath, TexW, TexH, AlphaModeStr);
-
-			// Cache texture info for UV normalization during import
-			FTextureCacheEntry Entry;
-			Entry.Size = FIntPoint(TexW, TexH);
-			Entry.bHasAlpha = (AlphaMode != ESourceAlphaMode::Opaque);
-			TextureInfoCache.Add(SourceMaterialPath.ToUpper(), Entry);
-
-			return CreateTexturedMID(Texture, SourceMaterialPath, AlphaMode);
 		}
 	}
 
-	// Fallback: create a colored placeholder
+	// ---- Load normal map (if present) ----
+	UTexture2D* NormalMap = nullptr;
+	FString BumpMapPath = VMTData.GetBumpMap();
+	if (!BumpMapPath.IsEmpty())
+	{
+		TArray<uint8> BumpBytes;
+		if (FindVTFBytes(BumpMapPath, BumpBytes))
+		{
+			TArray<uint8> BumpBGRA;
+			int32 BumpW, BumpH;
+			bool bBumpAlpha;
+			if (FVTFReader::DecodeToBGRA(BumpBytes, BumpMapPath, BumpBGRA, BumpW, BumpH, bBumpAlpha))
+			{
+				NormalMap = CreatePersistentTexture(BumpBGRA, BumpW, BumpH, BumpMapPath, true);
+			}
+		}
+	}
+
+	// ---- Create material ----
+	if (BaseTexture)
+	{
+		UMaterialInstanceConstant* MIC = CreatePersistentMaterial(
+			BaseTexture, NormalMap, AlphaMode, SourceMaterialPath, VMTData);
+
+		if (MIC)
+		{
+			// Register in manifest
+			USourceMaterialManifest* Manifest = USourceMaterialManifest::Get();
+			if (Manifest)
+			{
+				FSourceMaterialEntry Entry;
+				Entry.SourcePath = SourceMaterialPath;
+				Entry.Type = bFoundInVPK ? ESourceMaterialType::Stock : ESourceMaterialType::Imported;
+				Entry.TextureAsset = FSoftObjectPath(BaseTexture);
+				Entry.MaterialAsset = FSoftObjectPath(MIC);
+				if (NormalMap)
+				{
+					Entry.NormalMapAsset = FSoftObjectPath(NormalMap);
+				}
+				Entry.VMTShader = VMTData.ShaderName;
+				Entry.VMTParams = VMTData.Parameters;
+				Entry.bIsInVPK = bFoundInVPK;
+				Entry.LastImported = FDateTime::Now();
+				Manifest->Register(Entry);
+				Manifest->SaveManifest();
+			}
+
+			return MIC;
+		}
+	}
+
+	// ---- Fallback: color placeholder ----
 	FLinearColor Color = ColorFromName(SourceMaterialPath);
 
 	FString ColorStr = VMTData.Parameters.FindRef(TEXT("$color"));
@@ -650,53 +653,434 @@ UMaterialInterface* FMaterialImporter::CreateMaterialFromVMT(const FString& Sour
 		Color = FLinearColor(0.1f, 0.3f, 0.7f);
 	}
 
-	return CreateColorMID(Color, SourceMaterialPath);
+	UMaterialInstanceConstant* ColorMat = CreatePersistentColorMaterial(Color, SourceMaterialPath);
+	if (ColorMat)
+	{
+		// Register color placeholder in manifest too
+		USourceMaterialManifest* Manifest = USourceMaterialManifest::Get();
+		if (Manifest)
+		{
+			FSourceMaterialEntry Entry;
+			Entry.SourcePath = SourceMaterialPath;
+			Entry.Type = bFoundInVPK ? ESourceMaterialType::Stock : ESourceMaterialType::Imported;
+			Entry.MaterialAsset = FSoftObjectPath(ColorMat);
+			Entry.VMTShader = VMTData.ShaderName;
+			Entry.VMTParams = VMTData.Parameters;
+			Entry.bIsInVPK = bFoundInVPK;
+			Entry.LastImported = FDateTime::Now();
+			Manifest->Register(Entry);
+			Manifest->SaveManifest();
+		}
+	}
+	return ColorMat;
 }
 
 UMaterialInterface* FMaterialImporter::CreatePlaceholderMaterial(const FString& SourceMaterialPath)
 {
 	FString Upper = SourceMaterialPath.ToUpper();
 
-	// Give tool textures distinctive colors so they're visible during editing
+	FLinearColor Color;
 	if (Upper.StartsWith(TEXT("TOOLS/")))
 	{
-		FLinearColor Color;
 		if (Upper.Contains(TEXT("NODRAW")))
-			Color = FLinearColor(0.8f, 0.3f, 0.3f);  // Red-ish
+			Color = FLinearColor(0.8f, 0.3f, 0.3f);
 		else if (Upper.Contains(TEXT("TRIGGER")))
-			Color = FLinearColor(0.8f, 0.5f, 0.0f);   // Orange
+			Color = FLinearColor(0.8f, 0.5f, 0.0f);
 		else if (Upper.Contains(TEXT("CLIP")))
-			Color = FLinearColor(0.5f, 0.0f, 0.8f);   // Purple
+			Color = FLinearColor(0.5f, 0.0f, 0.8f);
 		else if (Upper.Contains(TEXT("INVISIBLE")))
-			Color = FLinearColor(0.3f, 0.3f, 0.8f);   // Blue-ish
+			Color = FLinearColor(0.3f, 0.3f, 0.8f);
 		else if (Upper.Contains(TEXT("SKYBOX")))
-			Color = FLinearColor(0.2f, 0.6f, 0.9f);   // Sky blue
+			Color = FLinearColor(0.2f, 0.6f, 0.9f);
 		else if (Upper.Contains(TEXT("HINT")))
-			Color = FLinearColor(0.9f, 0.9f, 0.0f);   // Yellow
+			Color = FLinearColor(0.9f, 0.9f, 0.0f);
 		else if (Upper.Contains(TEXT("SKIP")))
-			Color = FLinearColor(0.6f, 0.6f, 0.0f);   // Dark yellow
+			Color = FLinearColor(0.6f, 0.6f, 0.0f);
 		else if (Upper.Contains(TEXT("BLOCKLIGHT")))
-			Color = FLinearColor(0.1f, 0.1f, 0.1f);   // Near black
+			Color = FLinearColor(0.1f, 0.1f, 0.1f);
 		else if (Upper.Contains(TEXT("BLOCKLOS")))
-			Color = FLinearColor(0.5f, 0.2f, 0.0f);   // Brown
+			Color = FLinearColor(0.5f, 0.2f, 0.0f);
 		else if (Upper.Contains(TEXT("BLACK")))
-			Color = FLinearColor(0.02f, 0.02f, 0.02f); // Black
+			Color = FLinearColor(0.02f, 0.02f, 0.02f);
 		else if (Upper.Contains(TEXT("FOG")))
-			Color = FLinearColor(0.6f, 0.6f, 0.7f);   // Gray-blue
+			Color = FLinearColor(0.6f, 0.6f, 0.7f);
 		else
 			Color = ColorFromName(SourceMaterialPath);
-		return CreateColorMID(Color, SourceMaterialPath);
+	}
+	else
+	{
+		Color = ColorFromName(SourceMaterialPath);
 	}
 
-	FLinearColor Color = ColorFromName(SourceMaterialPath);
-	return CreateColorMID(Color, SourceMaterialPath);
+	UMaterialInstanceConstant* MIC = CreatePersistentColorMaterial(Color, SourceMaterialPath);
+
+	// Register placeholder in manifest
+	if (MIC)
+	{
+		USourceMaterialManifest* Manifest = USourceMaterialManifest::Get();
+		if (Manifest)
+		{
+			FSourceMaterialEntry Entry;
+			Entry.SourcePath = SourceMaterialPath;
+			Entry.Type = ESourceMaterialType::Imported;
+			Entry.MaterialAsset = FSoftObjectPath(MIC);
+			Entry.LastImported = FDateTime::Now();
+			Manifest->Register(Entry);
+			// Don't save after every placeholder — batch save later
+		}
+	}
+
+	return MIC;
 }
 
-UTexture2D* FMaterialImporter::FindAndLoadVTF(const FString& TexturePath)
-{
-	if (TexturePath.IsEmpty()) return nullptr;
+// ===========================================================================
+// Persistent Asset Creation
+// ===========================================================================
 
-	// Build the list of all directories to search: extracted first, then game dirs
+FString FMaterialImporter::SourcePathToAssetPath(const FString& Category, const FString& SourcePath)
+{
+	FString Clean = SourcePath.ToLower();
+	Clean.ReplaceInline(TEXT("\\"), TEXT("/"));
+	Clean.RemoveFromStart(TEXT("materials/"));
+
+	// Sanitize: replace any characters not valid in UE asset names
+	Clean = Clean.Replace(TEXT(" "), TEXT("_"));
+
+	return FString::Printf(TEXT("/Game/SourceBridge/%s/%s"), *Category, *Clean);
+}
+
+bool FMaterialImporter::SaveAsset(UObject* Asset)
+{
+	if (!Asset) return false;
+
+	UPackage* Package = Asset->GetOutermost();
+	if (!Package) return false;
+
+	FString PackageFileName;
+	if (!FPackageName::TryConvertLongPackageNameToFilename(
+		Package->GetName(), PackageFileName, FPackageName::GetAssetPackageExtension()))
+	{
+		UE_LOG(LogTemp, Error, TEXT("MaterialImporter: Failed to resolve save path for %s"), *Package->GetName());
+		return false;
+	}
+
+	// Ensure directory exists
+	FString Dir = FPaths::GetPath(PackageFileName);
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+	PlatformFile.CreateDirectoryTree(*Dir);
+
+	FSavePackageArgs SaveArgs;
+	SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
+	bool bSaved = UPackage::SavePackage(Package, Asset, *PackageFileName, SaveArgs);
+
+	if (!bSaved)
+	{
+		UE_LOG(LogTemp, Error, TEXT("MaterialImporter: Failed to save asset to %s"), *PackageFileName);
+	}
+
+	return bSaved;
+}
+
+UTexture2D* FMaterialImporter::CreatePersistentTexture(const TArray<uint8>& BGRAData, int32 Width, int32 Height,
+	const FString& SourceTexturePath, bool bIsNormalMap)
+{
+	FString AssetPath = SourcePathToAssetPath(TEXT("Textures"), SourceTexturePath);
+	FString AssetName = FPaths::GetCleanFilename(AssetPath);
+
+	// Check if already exists
+	FString FullObjectPath = AssetPath + TEXT(".") + AssetName;
+	UTexture2D* Existing = LoadObject<UTexture2D>(nullptr, *FullObjectPath);
+	if (Existing)
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("MaterialImporter: Texture already exists: %s"), *AssetPath);
+		return Existing;
+	}
+
+	// Create package and texture
+	UPackage* Package = CreatePackage(*AssetPath);
+	if (!Package)
+	{
+		UE_LOG(LogTemp, Error, TEXT("MaterialImporter: Failed to create package for texture: %s"), *AssetPath);
+		return nullptr;
+	}
+
+	UTexture2D* Texture = NewObject<UTexture2D>(Package, *AssetName, RF_Public | RF_Standalone);
+	if (!Texture)
+	{
+		UE_LOG(LogTemp, Error, TEXT("MaterialImporter: Failed to create texture object: %s"), *AssetName);
+		return nullptr;
+	}
+
+	// Initialize source data with BGRA8 pixels
+	Texture->Source.Init(Width, Height, 1, 1, TSF_BGRA8, BGRAData.GetData());
+	Texture->SRGB = !bIsNormalMap;
+	Texture->CompressionSettings = bIsNormalMap ? TC_Normalmap : TC_Default;
+	Texture->LODGroup = TEXTUREGROUP_World;
+	Texture->Filter = TF_Bilinear;
+	Texture->MipGenSettings = TMGS_FromTextureGroup;
+	Texture->UpdateResource();
+
+	// Register and save
+	Package->MarkPackageDirty();
+	FAssetRegistryModule::AssetCreated(Texture);
+	SaveAsset(Texture);
+
+	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Created persistent texture %dx%d: %s"), Width, Height, *AssetPath);
+	return Texture;
+}
+
+UMaterialInstanceConstant* FMaterialImporter::CreatePersistentMaterial(
+	UTexture2D* BaseTexture, UTexture2D* NormalMap,
+	ESourceAlphaMode AlphaMode, const FString& SourceMaterialPath,
+	const FVMTParsedMaterial& VMTData)
+{
+	FString AssetPath = SourcePathToAssetPath(TEXT("Materials"), SourceMaterialPath);
+	FString AssetName = FPaths::GetCleanFilename(AssetPath);
+
+	// Check if already exists
+	FString FullObjectPath = AssetPath + TEXT(".") + AssetName;
+	UMaterialInstanceConstant* Existing = LoadObject<UMaterialInstanceConstant>(nullptr, *FullObjectPath);
+	if (Existing)
+	{
+		UE_LOG(LogTemp, Verbose, TEXT("MaterialImporter: Material already exists: %s"), *AssetPath);
+		return Existing;
+	}
+
+	// Get parent base material
+	UMaterial* Parent = GetOrCreateBaseMaterial(AlphaMode);
+	if (!Parent)
+	{
+		UE_LOG(LogTemp, Error, TEXT("MaterialImporter: Failed to get base material for: %s"), *SourceMaterialPath);
+		return nullptr;
+	}
+
+	// Create package and material instance
+	UPackage* Package = CreatePackage(*AssetPath);
+	if (!Package) return nullptr;
+
+	UMaterialInstanceConstant* MIC = NewObject<UMaterialInstanceConstant>(Package, *AssetName, RF_Public | RF_Standalone);
+	if (!MIC) return nullptr;
+
+	MIC->Parent = Parent;
+
+	// Set base texture parameter
+	if (BaseTexture)
+	{
+		FTextureParameterValue& TexParam = MIC->TextureParameterValues.AddDefaulted_GetRef();
+		TexParam.ParameterInfo.Name = FName(TEXT("BaseTexture"));
+		TexParam.ParameterValue = BaseTexture;
+	}
+
+	// Set normal map parameter (if base material supports it)
+	// Note: currently our base materials don't have a normal map parameter.
+	// This is left as a hook for future enhancement.
+
+	// Tool texture opacity
+	if (AlphaMode == ESourceAlphaMode::Translucent
+		&& SourceMaterialPath.ToUpper().StartsWith(TEXT("TOOLS/")))
+	{
+		FScalarParameterValue& ScalarParam = MIC->ScalarParameterValues.AddDefaulted_GetRef();
+		ScalarParam.ParameterInfo.Name = FName(TEXT("OpacityScale"));
+		ScalarParam.ParameterValue = 0.25f;
+	}
+
+	MIC->PreEditChange(nullptr);
+	MIC->PostEditChange();
+
+	// Register and save
+	Package->MarkPackageDirty();
+	FAssetRegistryModule::AssetCreated(MIC);
+	SaveAsset(MIC);
+
+	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Created persistent material: %s (parent=%s)"),
+		*AssetPath, *Parent->GetName());
+	return MIC;
+}
+
+UMaterialInstanceConstant* FMaterialImporter::CreatePersistentColorMaterial(
+	const FLinearColor& Color, const FString& SourceMaterialPath)
+{
+	FString AssetPath = SourcePathToAssetPath(TEXT("Materials"), SourceMaterialPath);
+	FString AssetName = FPaths::GetCleanFilename(AssetPath);
+
+	// Check if already exists
+	FString FullObjectPath = AssetPath + TEXT(".") + AssetName;
+	UMaterialInstanceConstant* Existing = LoadObject<UMaterialInstanceConstant>(nullptr, *FullObjectPath);
+	if (Existing) return Existing;
+
+	UMaterial* Parent = GetOrCreateColorBaseMaterial();
+	if (!Parent) return nullptr;
+
+	UPackage* Package = CreatePackage(*AssetPath);
+	if (!Package) return nullptr;
+
+	UMaterialInstanceConstant* MIC = NewObject<UMaterialInstanceConstant>(Package, *AssetName, RF_Public | RF_Standalone);
+	if (!MIC) return nullptr;
+
+	MIC->Parent = Parent;
+
+	FVectorParameterValue& ColorParam = MIC->VectorParameterValues.AddDefaulted_GetRef();
+	ColorParam.ParameterInfo.Name = FName(TEXT("Color"));
+	ColorParam.ParameterValue = Color;
+
+	MIC->PreEditChange(nullptr);
+	MIC->PostEditChange();
+
+	Package->MarkPackageDirty();
+	FAssetRegistryModule::AssetCreated(MIC);
+	SaveAsset(MIC);
+
+	return MIC;
+}
+
+// ===========================================================================
+// Persistent Base Materials
+// ===========================================================================
+
+UMaterial* FMaterialImporter::GetOrCreateBaseMaterial(ESourceAlphaMode AlphaMode)
+{
+	UMaterial** CachePtr = nullptr;
+	FString MaterialName;
+
+	switch (AlphaMode)
+	{
+	case ESourceAlphaMode::Opaque:
+		CachePtr = &CachedOpaqueMaterial;
+		MaterialName = TEXT("M_SourceBridge_Opaque");
+		break;
+	case ESourceAlphaMode::Masked:
+		CachePtr = &CachedMaskedMaterial;
+		MaterialName = TEXT("M_SourceBridge_Masked");
+		break;
+	case ESourceAlphaMode::Translucent:
+		CachePtr = &CachedTranslucentMaterial;
+		MaterialName = TEXT("M_SourceBridge_Translucent");
+		break;
+	}
+
+	// Return cached if valid
+	if (*CachePtr && (*CachePtr)->IsValidLowLevel())
+	{
+		return *CachePtr;
+	}
+
+	// Try to load existing from disk
+	FString AssetPath = FString::Printf(TEXT("/Game/SourceBridge/BaseMaterials/%s"), *MaterialName);
+	FString FullObjectPath = AssetPath + TEXT(".") + MaterialName;
+	UMaterial* Mat = LoadObject<UMaterial>(nullptr, *FullObjectPath);
+	if (Mat)
+	{
+		*CachePtr = Mat;
+		UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Loaded base material from disk: %s"), *MaterialName);
+		return Mat;
+	}
+
+	// Create new persistent base material
+	UPackage* Package = CreatePackage(*AssetPath);
+	if (!Package) return nullptr;
+
+	Mat = NewObject<UMaterial>(Package, *MaterialName, RF_Public | RF_Standalone);
+	if (!Mat) return nullptr;
+
+	// Build expression graph based on alpha mode
+	UMaterialExpressionTextureSampleParameter2D* TexParam =
+		NewObject<UMaterialExpressionTextureSampleParameter2D>(Mat);
+	TexParam->ParameterName = FName(TEXT("BaseTexture"));
+	TexParam->SamplerType = SAMPLERTYPE_Color;
+	Mat->GetExpressionCollection().AddExpression(TexParam);
+	Mat->GetEditorOnlyData()->BaseColor.Connect(0, TexParam);
+
+	if (AlphaMode == ESourceAlphaMode::Masked)
+	{
+		Mat->BlendMode = BLEND_Masked;
+		Mat->TwoSided = true;
+		Mat->GetEditorOnlyData()->OpacityMask.Connect(4, TexParam); // Alpha output
+	}
+	else if (AlphaMode == ESourceAlphaMode::Translucent)
+	{
+		Mat->BlendMode = BLEND_Translucent;
+		Mat->TwoSided = true;
+
+		// OpacityScale parameter
+		UMaterialExpressionScalarParameter* OpacityScaleParam =
+			NewObject<UMaterialExpressionScalarParameter>(Mat);
+		OpacityScaleParam->ParameterName = FName(TEXT("OpacityScale"));
+		OpacityScaleParam->DefaultValue = 1.0f;
+		Mat->GetExpressionCollection().AddExpression(OpacityScaleParam);
+
+		// Multiply texture alpha by OpacityScale
+		UMaterialExpressionMultiply* MultiplyNode =
+			NewObject<UMaterialExpressionMultiply>(Mat);
+		MultiplyNode->A.Connect(4, TexParam);
+		MultiplyNode->B.Connect(0, OpacityScaleParam);
+		Mat->GetExpressionCollection().AddExpression(MultiplyNode);
+
+		Mat->GetEditorOnlyData()->Opacity.Connect(0, MultiplyNode);
+	}
+
+	Mat->PreEditChange(nullptr);
+	Mat->PostEditChange();
+
+	Package->MarkPackageDirty();
+	FAssetRegistryModule::AssetCreated(Mat);
+	SaveAsset(Mat);
+
+	*CachePtr = Mat;
+	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Created persistent base material: %s"), *MaterialName);
+	return Mat;
+}
+
+UMaterial* FMaterialImporter::GetOrCreateColorBaseMaterial()
+{
+	if (CachedColorMaterial && CachedColorMaterial->IsValidLowLevel())
+	{
+		return CachedColorMaterial;
+	}
+
+	FString MaterialName = TEXT("M_SourceBridge_Color");
+	FString AssetPath = FString::Printf(TEXT("/Game/SourceBridge/BaseMaterials/%s"), *MaterialName);
+	FString FullObjectPath = AssetPath + TEXT(".") + MaterialName;
+
+	UMaterial* Mat = LoadObject<UMaterial>(nullptr, *FullObjectPath);
+	if (Mat)
+	{
+		CachedColorMaterial = Mat;
+		return Mat;
+	}
+
+	UPackage* Package = CreatePackage(*AssetPath);
+	if (!Package) return nullptr;
+
+	Mat = NewObject<UMaterial>(Package, *MaterialName, RF_Public | RF_Standalone);
+	if (!Mat) return nullptr;
+
+	UMaterialExpressionVectorParameter* ColorParam =
+		NewObject<UMaterialExpressionVectorParameter>(Mat);
+	ColorParam->ParameterName = FName(TEXT("Color"));
+	ColorParam->DefaultValue = FLinearColor(0.5f, 0.5f, 0.5f);
+	Mat->GetExpressionCollection().AddExpression(ColorParam);
+	Mat->GetEditorOnlyData()->BaseColor.Connect(0, ColorParam);
+
+	Mat->PreEditChange(nullptr);
+	Mat->PostEditChange();
+
+	Package->MarkPackageDirty();
+	FAssetRegistryModule::AssetCreated(Mat);
+	SaveAsset(Mat);
+
+	CachedColorMaterial = Mat;
+	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Created persistent color base material"));
+	return Mat;
+}
+
+// ===========================================================================
+// VTF Loading (returns raw bytes)
+// ===========================================================================
+
+bool FMaterialImporter::FindVTFBytes(const FString& TexturePath, TArray<uint8>& OutFileData)
+{
+	if (TexturePath.IsEmpty()) return false;
+
 	TArray<FString> SearchRoots;
 	if (!AssetSearchPath.IsEmpty())
 	{
@@ -704,7 +1088,6 @@ UTexture2D* FMaterialImporter::FindAndLoadVTF(const FString& TexturePath)
 	}
 	SearchRoots.Append(AdditionalSearchPaths);
 
-	// Search for VTF: exact disk path (fast) → VPK (fast) → case-insensitive disk (slow, last resort)
 	FString VTFRelPath = TEXT("materials") / TexturePath + TEXT(".vtf");
 
 	// 1. Exact path on disk
@@ -715,23 +1098,21 @@ UTexture2D* FMaterialImporter::FindAndLoadVTF(const FString& TexturePath)
 
 		if (FPaths::FileExists(VTFFullPath))
 		{
-			UE_LOG(LogTemp, Verbose, TEXT("MaterialImporter: Found VTF at: %s"), *VTFFullPath);
-			return FVTFReader::LoadVTF(VTFFullPath);
+			if (FFileHelper::LoadFileToArray(OutFileData, *VTFFullPath))
+			{
+				UE_LOG(LogTemp, Verbose, TEXT("MaterialImporter: Found VTF at: %s"), *VTFFullPath);
+				return true;
+			}
 		}
 	}
 
-	// 2. VPK archives (fast hash lookup)
-	UTexture2D* VPKTexture = FindAndLoadVTFFromVPK(TexturePath);
-	if (VPKTexture)
+	// 2. VPK archives
+	if (FindVTFBytesFromVPK(TexturePath, OutFileData))
 	{
-		return VPKTexture;
+		return true;
 	}
 
-	// 3. Case-insensitive disk search (slow recursive scan, last resort)
-	UE_LOG(LogTemp, Warning, TEXT("MaterialImporter: SLOW PATH - recursive VTF scan for '%s' (%d search roots)"),
-		*TexturePath, SearchRoots.Num());
-	GLog->Flush();
-
+	// 3. Case-insensitive disk search (slow)
 	FString SearchPath = TexturePath + TEXT(".vtf");
 	SearchPath = SearchPath.Replace(TEXT("\\"), TEXT("/"));
 
@@ -751,198 +1132,45 @@ UTexture2D* FMaterialImporter::FindAndLoadVTF(const FString& TexturePath)
 
 			if (RelPath.Equals(SearchPath, ESearchCase::IgnoreCase))
 			{
-				UE_LOG(LogTemp, Verbose, TEXT("MaterialImporter: Found VTF (case-insensitive) at: %s"), *FoundVTF);
-				return FVTFReader::LoadVTF(FoundVTF);
+				if (FFileHelper::LoadFileToArray(OutFileData, *FoundVTF))
+				{
+					return true;
+				}
 			}
 		}
 	}
 
-	UE_LOG(LogTemp, Verbose, TEXT("MaterialImporter: VTF not found for '%s' (searched %d paths + %d VPKs)"),
-		*TexturePath, SearchRoots.Num(), VPKArchives.Num());
-	return nullptr;
+	UE_LOG(LogTemp, Verbose, TEXT("MaterialImporter: VTF not found for '%s'"), *TexturePath);
+	return false;
 }
 
-UMaterial* FMaterialImporter::GetOrCreateTextureBaseMaterial()
+bool FMaterialImporter::FindVTFBytesFromVPK(const FString& TexturePath, TArray<uint8>& OutData)
 {
-	if (TextureBaseMaterial && TextureBaseMaterial->IsValidLowLevel())
+	if (VPKArchives.Num() == 0) return false;
+
+	FString VPKPath = (TEXT("materials/") + TexturePath + TEXT(".vtf")).ToLower();
+	VPKPath = VPKPath.Replace(TEXT("\\"), TEXT("/"));
+
+	for (int32 i = 0; i < VPKArchives.Num(); i++)
 	{
-		return TextureBaseMaterial;
-	}
-
-	TextureBaseMaterial = NewObject<UMaterial>(GetTransientPackage(),
-		FName(TEXT("M_SourceBridge_TextureBase")), RF_Transient);
-
-	UMaterialExpressionTextureSampleParameter2D* TexParam =
-		NewObject<UMaterialExpressionTextureSampleParameter2D>(TextureBaseMaterial);
-	TexParam->ParameterName = FName(TEXT("BaseTexture"));
-	TexParam->SamplerType = SAMPLERTYPE_Color;
-	TextureBaseMaterial->GetExpressionCollection().AddExpression(TexParam);
-	TextureBaseMaterial->GetEditorOnlyData()->BaseColor.Connect(0, TexParam);
-
-	TextureBaseMaterial->PreEditChange(nullptr);
-	TextureBaseMaterial->PostEditChange();
-
-	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Created shared texture base material"));
-	return TextureBaseMaterial;
-}
-
-UMaterial* FMaterialImporter::GetOrCreateMaskedBaseMaterial()
-{
-	if (MaskedBaseMaterial && MaskedBaseMaterial->IsValidLowLevel())
-	{
-		return MaskedBaseMaterial;
-	}
-
-	MaskedBaseMaterial = NewObject<UMaterial>(GetTransientPackage(),
-		FName(TEXT("M_SourceBridge_MaskedBase")), RF_Transient);
-
-	// Set blend mode to Masked for alpha-tested materials
-	MaskedBaseMaterial->BlendMode = BLEND_Masked;
-	MaskedBaseMaterial->TwoSided = true;
-
-	UMaterialExpressionTextureSampleParameter2D* TexParam =
-		NewObject<UMaterialExpressionTextureSampleParameter2D>(MaskedBaseMaterial);
-	TexParam->ParameterName = FName(TEXT("BaseTexture"));
-	TexParam->SamplerType = SAMPLERTYPE_Color;
-	MaskedBaseMaterial->GetExpressionCollection().AddExpression(TexParam);
-
-	// Connect RGB to BaseColor, Alpha to OpacityMask
-	MaskedBaseMaterial->GetEditorOnlyData()->BaseColor.Connect(0, TexParam);
-	MaskedBaseMaterial->GetEditorOnlyData()->OpacityMask.Connect(4, TexParam); // Output 4 = Alpha
-
-	MaskedBaseMaterial->PreEditChange(nullptr);
-	MaskedBaseMaterial->PostEditChange();
-
-	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Created shared masked base material"));
-	return MaskedBaseMaterial;
-}
-
-UMaterial* FMaterialImporter::GetOrCreateTranslucentBaseMaterial()
-{
-	if (TranslucentBaseMaterial && TranslucentBaseMaterial->IsValidLowLevel())
-	{
-		return TranslucentBaseMaterial;
-	}
-
-	TranslucentBaseMaterial = NewObject<UMaterial>(GetTransientPackage(),
-		FName(TEXT("M_SourceBridge_TranslucentBase")), RF_Transient);
-
-	// Set blend mode to Translucent for smooth partial opacity
-	TranslucentBaseMaterial->BlendMode = BLEND_Translucent;
-	TranslucentBaseMaterial->TwoSided = true;
-
-	UMaterialExpressionTextureSampleParameter2D* TexParam =
-		NewObject<UMaterialExpressionTextureSampleParameter2D>(TranslucentBaseMaterial);
-	TexParam->ParameterName = FName(TEXT("BaseTexture"));
-	TexParam->SamplerType = SAMPLERTYPE_Color;
-	TranslucentBaseMaterial->GetExpressionCollection().AddExpression(TexParam);
-
-	// OpacityScale parameter (default 1.0, can be reduced for tool textures)
-	UMaterialExpressionScalarParameter* OpacityScaleParam =
-		NewObject<UMaterialExpressionScalarParameter>(TranslucentBaseMaterial);
-	OpacityScaleParam->ParameterName = FName(TEXT("OpacityScale"));
-	OpacityScaleParam->DefaultValue = 1.0f;
-	TranslucentBaseMaterial->GetExpressionCollection().AddExpression(OpacityScaleParam);
-
-	// Multiply texture alpha by OpacityScale → Opacity
-	UMaterialExpressionMultiply* MultiplyNode =
-		NewObject<UMaterialExpressionMultiply>(TranslucentBaseMaterial);
-	MultiplyNode->A.Connect(4, TexParam);        // Texture Alpha
-	MultiplyNode->B.Connect(0, OpacityScaleParam); // OpacityScale scalar
-	TranslucentBaseMaterial->GetExpressionCollection().AddExpression(MultiplyNode);
-
-	// Connect RGB to BaseColor, multiplied alpha to Opacity
-	TranslucentBaseMaterial->GetEditorOnlyData()->BaseColor.Connect(0, TexParam);
-	TranslucentBaseMaterial->GetEditorOnlyData()->Opacity.Connect(0, MultiplyNode);
-
-	TranslucentBaseMaterial->PreEditChange(nullptr);
-	TranslucentBaseMaterial->PostEditChange();
-
-	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Created shared translucent base material (with OpacityScale)"));
-	return TranslucentBaseMaterial;
-}
-
-UMaterial* FMaterialImporter::GetOrCreateColorBaseMaterial()
-{
-	if (ColorBaseMaterial && ColorBaseMaterial->IsValidLowLevel())
-	{
-		return ColorBaseMaterial;
-	}
-
-	ColorBaseMaterial = NewObject<UMaterial>(GetTransientPackage(),
-		FName(TEXT("M_SourceBridge_ColorBase")), RF_Transient);
-
-	UMaterialExpressionVectorParameter* ColorParam =
-		NewObject<UMaterialExpressionVectorParameter>(ColorBaseMaterial);
-	ColorParam->ParameterName = FName(TEXT("Color"));
-	ColorParam->DefaultValue = FLinearColor(0.5f, 0.5f, 0.5f);
-	ColorBaseMaterial->GetExpressionCollection().AddExpression(ColorParam);
-	ColorBaseMaterial->GetEditorOnlyData()->BaseColor.Connect(0, ColorParam);
-
-	ColorBaseMaterial->PreEditChange(nullptr);
-	ColorBaseMaterial->PostEditChange();
-
-	UE_LOG(LogTemp, Log, TEXT("MaterialImporter: Created shared color base material"));
-	return ColorBaseMaterial;
-}
-
-UMaterialInstanceDynamic* FMaterialImporter::CreateTexturedMID(UTexture2D* Texture, const FString& SourceMaterialPath, ESourceAlphaMode AlphaMode)
-{
-	UMaterial* BaseMat = nullptr;
-	FString Prefix;
-	switch (AlphaMode)
-	{
-	case ESourceAlphaMode::Translucent:
-		BaseMat = GetOrCreateTranslucentBaseMaterial();
-		Prefix = TEXT("MID_Translucent_");
-		break;
-	case ESourceAlphaMode::Masked:
-		BaseMat = GetOrCreateMaskedBaseMaterial();
-		Prefix = TEXT("MID_Masked_");
-		break;
-	default:
-		BaseMat = GetOrCreateTextureBaseMaterial();
-		Prefix = TEXT("MID_Tex_");
-		break;
-	}
-	if (!BaseMat) return nullptr;
-
-	FString SafeName = SourceMaterialPath.Replace(TEXT("/"), TEXT("_")).Replace(TEXT("\\"), TEXT("_"));
-	UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(BaseMat, GetTransientPackage(),
-		FName(*FString::Printf(TEXT("%s%s"), *Prefix, *SafeName)));
-
-	if (MID)
-	{
-		MID->SetTextureParameterValue(FName(TEXT("BaseTexture")), Texture);
-
-		// Tool textures should be much more transparent so you can see through them
-		// (Hammer renders them as translucent overlays, not solid surfaces)
-		if (AlphaMode == ESourceAlphaMode::Translucent
-			&& SourceMaterialPath.ToUpper().StartsWith(TEXT("TOOLS/")))
+		const TSharedPtr<FVPKReader>& VPK = VPKArchives[i];
+		if (VPK->Contains(VPKPath))
 		{
-			MID->SetScalarParameterValue(FName(TEXT("OpacityScale")), 0.25f);
+			if (VPK->ReadFile(VPKPath, OutData))
+			{
+				UE_LOG(LogTemp, Verbose, TEXT("MaterialImporter: Found VTF in VPK[%d]: %s (%d bytes)"),
+					i, *VPKPath, OutData.Num());
+				return true;
+			}
 		}
 	}
 
-	return MID;
+	return false;
 }
 
-UMaterialInstanceDynamic* FMaterialImporter::CreateColorMID(const FLinearColor& Color, const FString& SourceMaterialPath)
-{
-	UMaterial* BaseMat = GetOrCreateColorBaseMaterial();
-	if (!BaseMat) return nullptr;
-
-	FString SafeName = SourceMaterialPath.Replace(TEXT("/"), TEXT("_")).Replace(TEXT("\\"), TEXT("_"));
-	UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(BaseMat, GetTransientPackage(),
-		FName(*FString::Printf(TEXT("MID_Color_%s"), *SafeName)));
-
-	if (MID)
-	{
-		MID->SetVectorParameterValue(FName(TEXT("Color")), Color);
-	}
-
-	return MID;
-}
+// ===========================================================================
+// VMT Search (unchanged)
+// ===========================================================================
 
 FString FMaterialImporter::FindVMTInVPK(const FString& SourceMaterialPath)
 {
@@ -951,7 +1179,6 @@ FString FMaterialImporter::FindVMTInVPK(const FString& SourceMaterialPath)
 		return FString();
 	}
 
-	// VPK paths are lowercase with forward slashes, no leading slash
 	FString VPKPath = (TEXT("materials/") + SourceMaterialPath + TEXT(".vmt")).ToLower();
 	VPKPath = VPKPath.Replace(TEXT("\\"), TEXT("/"));
 
@@ -963,68 +1190,28 @@ FString FMaterialImporter::FindVMTInVPK(const FString& SourceMaterialPath)
 			TArray<uint8> Data;
 			if (VPK->ReadFile(VPKPath, Data))
 			{
-				// Convert raw bytes to FString (VMT files are ASCII/UTF-8)
 				FString Content;
 				FFileHelper::BufferToString(Content, Data.GetData(), Data.Num());
 				UE_LOG(LogTemp, Verbose, TEXT("MaterialImporter: Found VMT in VPK: %s (%d bytes)"),
 					*VPKPath, Data.Num());
 				return Content;
 			}
-			else
-			{
-				UE_LOG(LogTemp, Warning, TEXT("MaterialImporter: VPK Contains '%s' but ReadFile failed!"), *VPKPath);
-			}
 		}
 	}
 
-	UE_LOG(LogTemp, Verbose, TEXT("MaterialImporter: VMT not found in any VPK: %s"), *VPKPath);
 	return FString();
 }
 
-UTexture2D* FMaterialImporter::FindAndLoadVTFFromVPK(const FString& TexturePath)
-{
-	if (VPKArchives.Num() == 0) return nullptr;
-
-	// VPK paths are lowercase with forward slashes
-	FString VPKPath = (TEXT("materials/") + TexturePath + TEXT(".vtf")).ToLower();
-	VPKPath = VPKPath.Replace(TEXT("\\"), TEXT("/"));
-
-	for (int32 i = 0; i < VPKArchives.Num(); i++)
-	{
-		const TSharedPtr<FVPKReader>& VPK = VPKArchives[i];
-		if (VPK->Contains(VPKPath))
-		{
-			TArray<uint8> Data;
-			if (VPK->ReadFile(VPKPath, Data))
-			{
-				UE_LOG(LogTemp, Verbose, TEXT("MaterialImporter: Found VTF in VPK[%d]: %s (%d bytes)"),
-					i, *VPKPath, Data.Num());
-				return FVTFReader::LoadVTFFromMemory(Data, VPKPath);
-			}
-			else
-			{
-				UE_LOG(LogTemp, Warning, TEXT("MaterialImporter: VPK Contains VTF '%s' but ReadFile failed!"), *VPKPath);
-			}
-		}
-	}
-
-	UE_LOG(LogTemp, Verbose, TEXT("MaterialImporter: VTF not found in any VPK: %s"), *VPKPath);
-	return nullptr;
-}
+// ===========================================================================
+// Utility
+// ===========================================================================
 
 void FMaterialImporter::ClearCache()
 {
 	MaterialCache.Empty();
 	TextureInfoCache.Empty();
-	// NOTE: Do NOT clear AdditionalSearchPaths or VPKArchives here.
-	// Those are session-level configuration set by SetupGameSearchPaths(),
-	// which is expensive (opens/parses VPK directory files). ClearCache()
-	// is called per-import (e.g., by VMFImporter::ImportBlocks) and should
-	// only reset transient per-import state like resolved materials.
-	TextureBaseMaterial = nullptr;
-	MaskedBaseMaterial = nullptr;
-	TranslucentBaseMaterial = nullptr;
-	ColorBaseMaterial = nullptr;
+	// NOTE: Do NOT clear AdditionalSearchPaths, VPKArchives, or base material pointers.
+	// Those are session-level configuration. ClearCache() only resets per-import state.
 }
 
 FIntPoint FMaterialImporter::GetTextureSize(const FString& SourceMaterialPath)
@@ -1034,16 +1221,15 @@ FIntPoint FMaterialImporter::GetTextureSize(const FString& SourceMaterialPath)
 	{
 		return Found->Size;
 	}
-	return FIntPoint(512, 512); // Default assumption
+	return FIntPoint(512, 512);
 }
 
 FLinearColor FMaterialImporter::ColorFromName(const FString& Name)
 {
-	// Generate a deterministic but visually distinct color from the material name
 	uint32 Hash = GetTypeHash(Name.ToUpper());
 	float H = (float)(Hash % 360) / 360.0f;
-	float S = 0.4f + (float)((Hash >> 8) % 40) / 100.0f;    // 0.4 - 0.8
-	float V = 0.5f + (float)((Hash >> 16) % 30) / 100.0f;   // 0.5 - 0.8
+	float S = 0.4f + (float)((Hash >> 8) % 40) / 100.0f;
+	float V = 0.5f + (float)((Hash >> 16) % 30) / 100.0f;
 
 	return FLinearColor::MakeFromHSV8(
 		(uint8)(H * 255),

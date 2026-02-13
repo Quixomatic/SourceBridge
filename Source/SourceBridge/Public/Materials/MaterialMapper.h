@@ -8,9 +8,9 @@ class UMaterialInterface;
  * Maps UE materials to Source engine material paths.
  *
  * Priority:
- * 1. Manual overrides (user-defined UE material name -> Source path)
- * 2. Tool texture detection (materials named Tool_* map to tools/*)
- * 3. Name-based auto-mapping (strips prefixes, lowercases)
+ * 1. Material manifest lookup (Source path from import/previous export)
+ * 2. Manual overrides (user-defined UE material name -> Source path)
+ * 3. Tool texture detection (materials named Tool_* map to tools/*)
  * 4. Default fallback material
  */
 class SOURCEBRIDGE_API FMaterialMapper
@@ -21,7 +21,7 @@ public:
 	/** Resolve a UE material to a Source material path string. */
 	FString MapMaterial(UMaterialInterface* Material) const;
 
-	/** Resolve a UE material name to a Source material path. */
+	/** Resolve a UE material name to a Source material path (fallback only, no manifest). */
 	FString MapMaterialName(const FString& MaterialName) const;
 
 	/** Add a manual mapping override. */

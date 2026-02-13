@@ -5,7 +5,7 @@
 
 class UMaterial;
 class UMaterialInterface;
-class UMaterialInstanceDynamic;
+class UMaterialInstanceConstant;
 class UTexture2D;
 
 /** How a Source material handles transparency. */
@@ -29,13 +29,14 @@ struct FVMTParsedMaterial
 };
 
 /**
- * Imports Source engine materials into UE.
+ * Imports Source engine materials into UE as persistent assets.
  *
- * Handles:
- * - Parsing VMT files (KeyValues format)
- * - Searching extracted asset directories for VMT/VTF files
- * - Reverse material name mapping (Source path → UE material)
- * - Creating placeholder UE materials for unmapped Source materials
+ * All imported textures are saved as UTexture2D assets in Content/SourceBridge/Textures/.
+ * All imported materials are saved as UMaterialInstanceConstant in Content/SourceBridge/Materials/.
+ * Everything is tracked in the central USourceMaterialManifest.
+ *
+ * On subsequent imports, existing assets are reused (manifest lookup).
+ * Assets survive editor restart (persistent .uasset files).
  */
 class SOURCEBRIDGE_API FMaterialImporter
 {
@@ -52,51 +53,42 @@ public:
 	 */
 	static void SetAssetSearchPath(const FString& Path);
 
-	/**
-	 * Find or create a UE material for a Source material path.
-	 * Search order:
-	 * 1. Material cache
-	 * 2. Extracted VMT file in asset search path → parse and create material
-	 * 3. Existing UE material in asset registry (reverse name mapping)
-	 * 4. Create placeholder material with deterministic color
-	 */
-	static UMaterialInterface* ResolveSourceMaterial(const FString& SourceMaterialPath);
-
-	/**
-	 * Try to find an existing UE material asset by reversing the Source path.
-	 * Returns null if no match found.
-	 */
-	static UMaterialInterface* FindExistingMaterial(const FString& SourceMaterialPath);
-
-	/**
-	 * Try to find and parse a VMT file from the asset search path.
-	 * If found, creates a material based on VMT properties.
-	 */
-	static UMaterialInterface* CreateMaterialFromVMT(const FString& SourceMaterialPath);
-
-	/**
-	 * Create a simple placeholder material with a color based on the material name.
-	 * The placeholder is a dynamic material instance that can be applied to brushes.
-	 */
-	static UMaterialInterface* CreatePlaceholderMaterial(const FString& SourceMaterialPath);
-
 	/** Set up additional search paths from the Source game install directory. */
 	static void SetupGameSearchPaths(const FString& GameName = TEXT("cstrike"));
 
-	/** Clear the material cache. Call when starting a new import. */
-	static void ClearCache();
+	/**
+	 * Find or create a persistent UE material for a Source material path.
+	 * Search order:
+	 * 1. Runtime pointer cache
+	 * 2. Material manifest (loads existing persistent asset)
+	 * 3. VMT/VTF on disk or in VPK → creates persistent texture + material + registers in manifest
+	 * 4. Placeholder persistent material
+	 */
+	static UMaterialInterface* ResolveSourceMaterial(const FString& SourceMaterialPath);
+
+	/** Try to find an existing UE material (manifest first, then asset registry). */
+	static UMaterialInterface* FindExistingMaterial(const FString& SourceMaterialPath);
+
+	/** Create a persistent material from VMT/VTF data. */
+	static UMaterialInterface* CreateMaterialFromVMT(const FString& SourceMaterialPath);
+
+	/** Create a persistent placeholder material with a deterministic color. */
+	static UMaterialInterface* CreatePlaceholderMaterial(const FString& SourceMaterialPath);
 
 	/**
-	 * Get the texture dimensions for a Source material path.
-	 * Returns cached VTF dimensions, or (512,512) if unknown.
+	 * Clear the runtime pointer cache. Does NOT delete persistent assets.
+	 * Call when starting a new import session.
 	 */
+	static void ClearCache();
+
+	/** Get texture dimensions for a Source material path. Returns (512,512) if unknown. */
 	static FIntPoint GetTextureSize(const FString& SourceMaterialPath);
 
 private:
-	/** Cache of resolved materials (Source path → UE material) */
+	/** Runtime pointer cache (Source path → loaded persistent UMaterialInterface*) */
 	static TMap<FString, UMaterialInterface*> MaterialCache;
 
-	/** Texture info cached when VTFs are loaded */
+	/** Texture info cached during VTF decode */
 	struct FTextureCacheEntry
 	{
 		FIntPoint Size = FIntPoint(512, 512);
@@ -113,48 +105,58 @@ private:
 	/** Additional search paths (game materials dir, custom dirs) */
 	static TArray<FString> AdditionalSearchPaths;
 
-	/** Generate a deterministic color from a material name (for placeholders). */
-	static FLinearColor ColorFromName(const FString& Name);
-
-	/** Get or create the shared base material with a TextureSampleParameter2D (opaque). */
-	static UMaterial* GetOrCreateTextureBaseMaterial();
-
-	/** Get or create the shared base material for masked/alpha-tested textures. */
-	static UMaterial* GetOrCreateMaskedBaseMaterial();
-
-	/** Get or create the shared base material for translucent/semi-transparent textures. */
-	static UMaterial* GetOrCreateTranslucentBaseMaterial();
-
-	/** Get or create the shared base material with a VectorParameter for color. */
-	static UMaterial* GetOrCreateColorBaseMaterial();
-
-	/** Create a MID from the appropriate base material with the given texture. */
-	static UMaterialInstanceDynamic* CreateTexturedMID(UTexture2D* Texture, const FString& SourceMaterialPath, ESourceAlphaMode AlphaMode = ESourceAlphaMode::Opaque);
-
-	/** Create a MID from the color base material with the given color. */
-	static UMaterialInstanceDynamic* CreateColorMID(const FLinearColor& Color, const FString& SourceMaterialPath);
-
-	/** Find and load a VTF texture from all search paths. */
-	static UTexture2D* FindAndLoadVTF(const FString& TexturePath);
-
-	/** Try to find and parse a VMT from VPK archives. Returns empty string if not found. */
-	static FString FindVMTInVPK(const FString& SourceMaterialPath);
-
-	/** Try to load a VTF from VPK archives. Returns null if not found. */
-	static UTexture2D* FindAndLoadVTFFromVPK(const FString& TexturePath);
-
-	/** Initialize reverse mappings if not already done. */
-	static void EnsureReverseToolMappings();
-
-	/** Lazily initialize VPK archives if not already loaded. Uses TargetGame from settings. */
-	static void EnsureVPKArchivesLoaded();
-
-	/** Opened VPK archives for game material access. */
+	/** Opened VPK archives for game material access */
 	static TArray<TSharedPtr<FVPKReader>> VPKArchives;
 
-	/** Shared base materials (created once, reused for all MIDs). */
-	static UMaterial* TextureBaseMaterial;
-	static UMaterial* MaskedBaseMaterial;
-	static UMaterial* TranslucentBaseMaterial;
-	static UMaterial* ColorBaseMaterial;
+	// ---- Persistent Asset Creation ----
+
+	/** Create a persistent UTexture2D from BGRA pixel data. */
+	static UTexture2D* CreatePersistentTexture(const TArray<uint8>& BGRAData, int32 Width, int32 Height,
+		const FString& SourceTexturePath, bool bIsNormalMap = false);
+
+	/** Create a persistent UMaterialInstanceConstant from a texture + VMT data. */
+	static UMaterialInstanceConstant* CreatePersistentMaterial(UTexture2D* BaseTexture, UTexture2D* NormalMap,
+		ESourceAlphaMode AlphaMode, const FString& SourceMaterialPath, const FVMTParsedMaterial& VMTData);
+
+	/** Create a persistent color-only material (for placeholders). */
+	static UMaterialInstanceConstant* CreatePersistentColorMaterial(const FLinearColor& Color,
+		const FString& SourceMaterialPath);
+
+	// ---- Persistent Base Materials ----
+
+	/** Get or create the persistent base material for a given alpha mode. */
+	static UMaterial* GetOrCreateBaseMaterial(ESourceAlphaMode AlphaMode);
+
+	/** Get or create the persistent color base material (for placeholders). */
+	static UMaterial* GetOrCreateColorBaseMaterial();
+
+	static UMaterial* CachedOpaqueMaterial;
+	static UMaterial* CachedMaskedMaterial;
+	static UMaterial* CachedTranslucentMaterial;
+	static UMaterial* CachedColorMaterial;
+
+	// ---- VTF Loading ----
+
+	/** Find raw VTF file bytes from disk or VPK. */
+	static bool FindVTFBytes(const FString& TexturePath, TArray<uint8>& OutFileData);
+
+	/** Try to find VTF bytes in VPK archives only. */
+	static bool FindVTFBytesFromVPK(const FString& TexturePath, TArray<uint8>& OutData);
+
+	// ---- VMT Search ----
+
+	/** Try to find and read VMT content from VPK archives. */
+	static FString FindVMTInVPK(const FString& SourceMaterialPath);
+
+	// ---- Helpers ----
+
+	static void EnsureReverseToolMappings();
+	static void EnsureVPKArchivesLoaded();
+	static FLinearColor ColorFromName(const FString& Name);
+
+	/** Convert a Source path to a UE asset path. E.g. ("Textures", "concrete/floor") → "/Game/SourceBridge/Textures/concrete/floor" */
+	static FString SourcePathToAssetPath(const FString& Category, const FString& SourcePath);
+
+	/** Save a UObject asset to disk. Returns true on success. */
+	static bool SaveAsset(UObject* Asset);
 };

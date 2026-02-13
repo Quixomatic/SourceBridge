@@ -136,6 +136,98 @@ bool FVTFReader::ConvertToBGRA8(const uint8* Src, int32 SrcSize, uint32 SrcForma
 	}
 }
 
+bool FVTFReader::DecodeToBGRA(const TArray<uint8>& FileData, const FString& DebugName,
+	TArray<uint8>& OutBGRA, int32& OutWidth, int32& OutHeight, bool& bOutHasAlpha)
+{
+	OutWidth = 0;
+	OutHeight = 0;
+	bOutHasAlpha = false;
+	OutBGRA.Empty();
+
+	if (FileData.Num() < (int32)sizeof(FVTFHeaderRaw))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("VTFReader::DecodeToBGRA: Data too small: %s"), *DebugName);
+		return false;
+	}
+
+	const FVTFHeaderRaw* Header = reinterpret_cast<const FVTFHeaderRaw*>(FileData.GetData());
+	if (FMemory::Memcmp(Header->Signature, "VTF", 3) != 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("VTFReader::DecodeToBGRA: Invalid VTF signature: %s"), *DebugName);
+		return false;
+	}
+
+	int32 Width = Header->Width;
+	int32 Height = Header->Height;
+	uint32 Format = Header->HighResImageFormat;
+	int32 MipCount = Header->MipmapCount;
+	uint32 HeaderSize = Header->HeaderSize;
+
+	if (Width <= 0 || Height <= 0 || Width > 4096 || Height > 4096)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("VTFReader::DecodeToBGRA: Invalid dimensions %dx%d: %s"), Width, Height, *DebugName);
+		return false;
+	}
+
+	// Calculate offset to the largest mipmap
+	int32 LowResSize = CalcImageSize(Header->LowResImageFormat,
+		Header->LowResImageWidth, Header->LowResImageHeight);
+	int32 MipDataOffset = HeaderSize + LowResSize;
+	for (int32 Mip = MipCount - 1; Mip > 0; Mip--)
+	{
+		int32 MipW = FMath::Max(Width >> Mip, 1);
+		int32 MipH = FMath::Max(Height >> Mip, 1);
+		MipDataOffset += CalcImageSize(Format, MipW, MipH);
+	}
+
+	int32 FullMipSize = CalcImageSize(Format, Width, Height);
+	if (FullMipSize == 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("VTFReader::DecodeToBGRA: Unsupported format %d: %s"), Format, *DebugName);
+		return false;
+	}
+
+	if (MipDataOffset + FullMipSize > FileData.Num())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("VTFReader::DecodeToBGRA: Data truncated (need %d, have %d): %s"),
+			MipDataOffset + FullMipSize, FileData.Num(), *DebugName);
+		return false;
+	}
+
+	const uint8* MipData = FileData.GetData() + MipDataOffset;
+
+	// Determine alpha support based on original format
+	bOutHasAlpha = (Format == VTF_DXT3 || Format == VTF_DXT5 ||
+		Format == VTF_BGRA8888 || Format == VTF_RGBA8888 || Format == VTF_ABGR8888);
+
+	// Decode to BGRA8
+	bool bSuccess = false;
+	if (Format == VTF_DXT1)
+	{
+		bSuccess = DecompressDXT1(MipData, Width, Height, OutBGRA);
+	}
+	else if (Format == VTF_DXT3)
+	{
+		bSuccess = DecompressDXT3(MipData, Width, Height, OutBGRA);
+	}
+	else if (Format == VTF_DXT5)
+	{
+		bSuccess = DecompressDXT5(MipData, Width, Height, OutBGRA);
+	}
+	else
+	{
+		bSuccess = ConvertToBGRA8(MipData, FullMipSize, Format, Width, Height, OutBGRA);
+	}
+
+	if (bSuccess)
+	{
+		OutWidth = Width;
+		OutHeight = Height;
+	}
+
+	return bSuccess;
+}
+
 UTexture2D* FVTFReader::LoadVTF(const FString& FilePath)
 {
 	TArray<uint8> FileData;
