@@ -5,6 +5,21 @@
 class UTexture2D;
 
 /**
+ * Options for VTF conversion via vtfcmd.exe.
+ */
+struct FVTFConvertOptions
+{
+	/** Pixel format: "DXT1" (opaque, smaller), "DXT5" (has alpha), "BGRA8888" (uncompressed) */
+	FString Format = TEXT("DXT5");
+
+	/** Generate mipmaps (recommended for quality at distance) */
+	bool bGenerateMipmaps = true;
+
+	/** Input is a normal map (enables normal map processing in vtfcmd) */
+	bool bNormalMap = false;
+};
+
+/**
  * Result of a texture export operation.
  */
 struct FTextureExportResult
@@ -41,6 +56,15 @@ public:
 	static FString ConvertTGAToVTF(
 		const FString& TGAPath,
 		const FString& OutputDir,
+		const FString& VTFCmdPath = FString());
+
+	/**
+	 * Run vtfcmd.exe with explicit format/mipmap/normal options.
+	 */
+	static FString ConvertTGAToVTF(
+		const FString& TGAPath,
+		const FString& OutputDir,
+		const FVTFConvertOptions& Options,
 		const FString& VTFCmdPath = FString());
 
 	/**

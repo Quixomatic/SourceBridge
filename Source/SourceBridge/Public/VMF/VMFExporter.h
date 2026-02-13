@@ -21,8 +21,12 @@ public:
 	 * Iterates all ABrush actors, converts geometry, builds complete VMF.
 	 * Skips the default builder brush and volume actors.
 	 * Warnings are logged via UE_LOG.
+	 *
+	 * @param World The world to export.
+	 * @param MapName Optional map name for custom material Source paths (e.g. "custom/<mapname>/<material>").
+	 * @param OutUsedMaterials Optional output: all Source material paths referenced in the exported VMF.
 	 */
-	static FString ExportScene(UWorld* World);
+	static FString ExportScene(UWorld* World, const FString& MapName = FString(), TSet<FString>* OutUsedMaterials = nullptr);
 
 	/**
 	 * Generate a complete VMF string for a sealed box room.

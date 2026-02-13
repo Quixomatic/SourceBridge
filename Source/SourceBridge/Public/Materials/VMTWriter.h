@@ -55,4 +55,23 @@ public:
 	static FString GenerateModelVMT(
 		const FString& BaseTexturePath,
 		const FString& SurfaceProp = TEXT("metal"));
+
+	/**
+	 * Generate a VMT from material analysis results and a Source material path.
+	 * Maps UE material properties to VMT parameters:
+	 *   Masked -> $alphatest, Translucent -> $translucent, TwoSided -> $nocull,
+	 *   NormalMap -> $bumpmap, Emissive -> $selfillum, etc.
+	 */
+	static FString GenerateFromAnalysis(
+		const struct FSourceMaterialAnalysis& Analysis,
+		const FString& SourceMaterialPath,
+		const FString& NormalMapPath = FString());
+
+	/**
+	 * Generate a VMT from stored VMT parameters (lossless re-export of imported materials).
+	 * Uses the original shader and all original parameters from the manifest entry.
+	 */
+	static FString GenerateFromStoredParams(
+		const FString& Shader,
+		const TMap<FString, FString>& Params);
 };

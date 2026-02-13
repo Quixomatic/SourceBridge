@@ -14,7 +14,7 @@
 #include "EngineUtils.h"
 #include "GameFramework/Volume.h"
 
-FString FVMFExporter::ExportScene(UWorld* World)
+FString FVMFExporter::ExportScene(UWorld* World, const FString& MapName, TSet<FString>* OutUsedMaterials)
 {
 	if (!World)
 	{
@@ -60,6 +60,10 @@ FString FVMFExporter::ExportScene(UWorld* World)
 
 	// Material mapper resolves UE materials to Source material paths
 	FMaterialMapper MatMapper;
+	if (!MapName.IsEmpty())
+	{
+		MatMapper.SetMapName(MapName);
+	}
 
 	// Deferred brush entities (func_detail, func_wall, etc.) - written after worldspawn
 	TArray<FVMFKeyValues> BrushEntities;
@@ -290,6 +294,13 @@ FString FVMFExporter::ExportScene(UWorld* World)
 
 	UE_LOG(LogTemp, Log, TEXT("SourceBridge: Exported %d brushes (%d from meshes, %d skipped), %d brush entities, %d entities, %d props to VMF."),
 		BrushCount, MeshBrushCount, SkippedCount, BrushEntities.Num(), EntityResult.Entities.Num(), PropEntities.Num());
+
+	// Return the set of all Source material paths used in this export
+	if (OutUsedMaterials)
+	{
+		*OutUsedMaterials = MatMapper.GetUsedPaths();
+		UE_LOG(LogTemp, Log, TEXT("SourceBridge: %d unique material paths used in export."), OutUsedMaterials->Num());
+	}
 
 	return Result;
 }

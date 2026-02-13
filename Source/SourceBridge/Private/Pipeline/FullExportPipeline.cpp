@@ -5,6 +5,10 @@
 #include "Models/SMDExporter.h"
 #include "Models/QCWriter.h"
 #include "Import/ModelImporter.h"
+#include "Materials/SourceMaterialManifest.h"
+#include "Materials/TextureExporter.h"
+#include "Materials/VMTWriter.h"
+#include "Materials/MaterialAnalyzer.h"
 #include "Actors/SourceEntityActor.h"
 #include "HAL/PlatformFilemanager.h"
 #include "Misc/FileHelper.h"
@@ -12,6 +16,7 @@
 #include "Engine/World.h"
 #include "Engine/StaticMeshActor.h"
 #include "Engine/StaticMesh.h"
+#include "Engine/Texture2D.h"
 #include "EngineUtils.h"
 
 FFullExportResult FFullExportPipeline::Run(UWorld* World, const FFullExportSettings& Settings)
@@ -250,7 +255,8 @@ FFullExportResult FFullExportPipeline::RunWithProgress(
 	// ---- Step 4: Export VMF ----
 	ReportProgress(TEXT("Exporting VMF..."), 0.4f);
 	UE_LOG(LogTemp, Log, TEXT("SourceBridge: Exporting scene to VMF..."));
-	FString VMFContent = FVMFExporter::ExportScene(World);
+	TSet<FString> UsedMaterialPaths;
+	FString VMFContent = FVMFExporter::ExportScene(World, MapName, &UsedMaterialPaths);
 
 	if (VMFContent.IsEmpty())
 	{
@@ -267,6 +273,152 @@ FFullExportResult FFullExportPipeline::RunWithProgress(
 	Result.ExportSeconds = FPlatformTime::Seconds() - StartTime;
 	UE_LOG(LogTemp, Log, TEXT("SourceBridge: VMF exported to %s (%.1f seconds)"),
 		*Result.VMFPath, Result.ExportSeconds);
+
+	// ---- Step 4b: Export custom material files (VTF + VMT) ----
+	{
+		USourceMaterialManifest* Manifest = USourceMaterialManifest::Get();
+		if (Manifest && UsedMaterialPaths.Num() > 0)
+		{
+			ReportProgress(TEXT("Exporting custom materials..."), 0.5f);
+			FString MaterialsDir = OutputDir / TEXT("materials");
+			int32 MaterialExportCount = 0;
+
+			for (const FString& UsedPath : UsedMaterialPaths)
+			{
+				FSourceMaterialEntry* Entry = Manifest->FindBySourcePath(UsedPath);
+				if (!Entry) continue;
+
+				// Only export materials that need files
+				bool bNeedsExport = false;
+				if (Entry->Type == ESourceMaterialType::Custom)
+				{
+					bNeedsExport = true;
+				}
+				else if (Entry->Type == ESourceMaterialType::Imported && !Entry->bIsInVPK)
+				{
+					bNeedsExport = true;
+				}
+
+				if (!bNeedsExport) continue;
+
+				// Create output directory for this material
+				FString MatDir = MaterialsDir / FPaths::GetPath(Entry->SourcePath);
+				PlatformFile.CreateDirectoryTree(*MatDir);
+				FString BaseName = FPaths::GetBaseFilename(Entry->SourcePath);
+
+				// Export base texture -> TGA -> VTF
+				UTexture2D* BaseTexture = Cast<UTexture2D>(Entry->TextureAsset.TryLoad());
+				FString VTFPath;
+				if (BaseTexture)
+				{
+					FString TGAPath = MatDir / BaseName + TEXT(".tga");
+					if (FTextureExporter::ExportTextureToTGA(BaseTexture, TGAPath))
+					{
+						// Determine VTF format based on transparency
+						FVTFConvertOptions VTFOptions;
+						if (Entry->VMTParams.Contains(TEXT("$alphatest")) ||
+							Entry->VMTParams.Contains(TEXT("$translucent")))
+						{
+							VTFOptions.Format = TEXT("DXT5");
+						}
+						else
+						{
+							VTFOptions.Format = TEXT("DXT1");
+						}
+						VTFOptions.bGenerateMipmaps = true;
+
+						VTFPath = FTextureExporter::ConvertTGAToVTF(TGAPath, MatDir, VTFOptions);
+						if (!VTFPath.IsEmpty())
+						{
+							FString InternalPath = FString(TEXT("materials/")) + Entry->SourcePath + TEXT(".vtf");
+							InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+							CustomContentFiles.Add(InternalPath, VTFPath);
+						}
+
+						// Clean up TGA (VTF is what we need for the game)
+						PlatformFile.DeleteFile(*TGAPath);
+					}
+				}
+
+				// Export normal map -> TGA -> VTF (if present)
+				UTexture2D* NormalMap = Cast<UTexture2D>(Entry->NormalMapAsset.TryLoad());
+				FString NormalVTFPath;
+				FString NormalSourcePath;
+				if (NormalMap)
+				{
+					NormalSourcePath = Entry->SourcePath + TEXT("_normal");
+					FString NormalTGAPath = MatDir / BaseName + TEXT("_normal.tga");
+					if (FTextureExporter::ExportTextureToTGA(NormalMap, NormalTGAPath))
+					{
+						FVTFConvertOptions NormalOptions;
+						NormalOptions.Format = TEXT("DXT5");
+						NormalOptions.bGenerateMipmaps = true;
+						NormalOptions.bNormalMap = true;
+
+						NormalVTFPath = FTextureExporter::ConvertTGAToVTF(NormalTGAPath, MatDir, NormalOptions);
+						if (!NormalVTFPath.IsEmpty())
+						{
+							FString InternalPath = FString(TEXT("materials/")) + NormalSourcePath + TEXT(".vtf");
+							InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+							CustomContentFiles.Add(InternalPath, NormalVTFPath);
+						}
+
+						PlatformFile.DeleteFile(*NormalTGAPath);
+					}
+				}
+
+				// Generate VMT
+				FString VMTContent;
+				if (Entry->Type == ESourceMaterialType::Imported && Entry->VMTParams.Num() > 0)
+				{
+					// Lossless re-export: use stored VMT params from import
+					VMTContent = FVMTWriter::GenerateFromStoredParams(Entry->VMTShader, Entry->VMTParams);
+				}
+				else
+				{
+					// Generate VMT for custom materials
+					FVMTWriter Writer;
+					Writer.SetShader(TEXT("LightmappedGeneric"));
+					Writer.SetBaseTexture(Entry->SourcePath);
+
+					if (!NormalSourcePath.IsEmpty())
+					{
+						Writer.SetBumpMap(NormalSourcePath);
+					}
+
+					// Apply stored VMT params (transparency, two-sided, etc.)
+					for (const auto& Param : Entry->VMTParams)
+					{
+						Writer.SetParameter(Param.Key, Param.Value);
+					}
+
+					// Auto-detect surface property if not already set
+					if (!Entry->VMTParams.Contains(TEXT("$surfaceprop")))
+					{
+						Writer.SetSurfaceProp(TEXT("default"));
+					}
+
+					VMTContent = Writer.Serialize();
+				}
+
+				FString VMTPath = MatDir / BaseName + TEXT(".vmt");
+				if (FFileHelper::SaveStringToFile(VMTContent, *VMTPath))
+				{
+					FString InternalPath = FString(TEXT("materials/")) + Entry->SourcePath + TEXT(".vmt");
+					InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+					CustomContentFiles.Add(InternalPath, VMTPath);
+				}
+
+				MaterialExportCount++;
+			}
+
+			if (MaterialExportCount > 0)
+			{
+				UE_LOG(LogTemp, Log, TEXT("SourceBridge: Exported %d custom material(s) to %s"),
+					MaterialExportCount, *MaterialsDir);
+			}
+		}
+	}
 
 	// ---- Step 5: Compile map (dependency: after materials and models) ----
 	if (Settings.bCompile)

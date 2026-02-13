@@ -1,4 +1,5 @@
 #include "Materials/VMTWriter.h"
+#include "Materials/MaterialAnalyzer.h"
 #include "Materials/SurfaceProperties.h"
 
 FVMTWriter::FVMTWriter()
@@ -88,6 +89,70 @@ FString FVMTWriter::GenerateModelVMT(
 		ResolvedProp = FSurfacePropertiesDatabase::Get().DetectSurfaceProp(BaseTexturePath);
 	}
 	Writer.SetSurfaceProp(ResolvedProp);
+
+	return Writer.Serialize();
+}
+
+FString FVMTWriter::GenerateFromAnalysis(
+	const FSourceMaterialAnalysis& Analysis,
+	const FString& SourceMaterialPath,
+	const FString& NormalMapPath)
+{
+	FVMTWriter Writer;
+	Writer.SetShader(TEXT("LightmappedGeneric"));
+	Writer.SetBaseTexture(SourceMaterialPath);
+
+	// Surface property from texture path
+	FString SurfaceProp = FSurfacePropertiesDatabase::Get().DetectSurfaceProp(SourceMaterialPath);
+	Writer.SetSurfaceProp(SurfaceProp);
+
+	// Normal / bump map
+	if (!NormalMapPath.IsEmpty())
+	{
+		Writer.SetBumpMap(NormalMapPath);
+	}
+
+	// Transparency
+	if (Analysis.bIsMasked)
+	{
+		Writer.SetParameter(TEXT("$alphatest"), TEXT("1"));
+		Writer.SetParameter(TEXT("$alphatestreference"), TEXT("0.5"));
+	}
+	else if (Analysis.bIsTranslucent)
+	{
+		Writer.SetParameter(TEXT("$translucent"), TEXT("1"));
+		if (Analysis.Opacity < 1.0f)
+		{
+			Writer.SetParameter(TEXT("$alpha"), FString::Printf(TEXT("%.2f"), Analysis.Opacity));
+		}
+	}
+
+	// Two-sided
+	if (Analysis.bTwoSided)
+	{
+		Writer.SetParameter(TEXT("$nocull"), TEXT("1"));
+	}
+
+	// Emissive / self-illumination
+	if (Analysis.EmissiveTexture)
+	{
+		Writer.SetParameter(TEXT("$selfillum"), TEXT("1"));
+	}
+
+	return Writer.Serialize();
+}
+
+FString FVMTWriter::GenerateFromStoredParams(
+	const FString& Shader,
+	const TMap<FString, FString>& Params)
+{
+	FVMTWriter Writer;
+	Writer.SetShader(Shader.IsEmpty() ? TEXT("LightmappedGeneric") : Shader);
+
+	for (const auto& Pair : Params)
+	{
+		Writer.SetParameter(Pair.Key, Pair.Value);
+	}
 
 	return Writer.Serialize();
 }

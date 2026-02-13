@@ -134,6 +134,19 @@ FString FTextureExporter::ConvertTGAToVTF(
 	const FString& OutputDir,
 	const FString& VTFCmdPath)
 {
+	// Default options: DXT5, no mipmaps (legacy behavior)
+	FVTFConvertOptions Options;
+	Options.Format = TEXT("DXT5");
+	Options.bGenerateMipmaps = false;
+	return ConvertTGAToVTF(TGAPath, OutputDir, Options, VTFCmdPath);
+}
+
+FString FTextureExporter::ConvertTGAToVTF(
+	const FString& TGAPath,
+	const FString& OutputDir,
+	const FVTFConvertOptions& Options,
+	const FString& VTFCmdPath)
+{
 	FString ToolPath = VTFCmdPath;
 	if (ToolPath.IsEmpty())
 	{
@@ -146,10 +159,23 @@ FString FTextureExporter::ConvertTGAToVTF(
 		return FString();
 	}
 
-	// vtfcmd.exe -file "input.tga" -output "outputdir" -format "DXT5"
-	FString Args = FString::Printf(
-		TEXT("-file \"%s\" -output \"%s\" -format \"DXT5\" -nomipmaps"),
-		*TGAPath, *OutputDir);
+	// Build vtfcmd arguments
+	FString Args = FString::Printf(TEXT("-file \"%s\" -output \"%s\" -format \"%s\" -resize"),
+		*TGAPath, *OutputDir, *Options.Format);
+
+	if (Options.bGenerateMipmaps)
+	{
+		Args += TEXT(" -mfilter \"CATROM\"");
+	}
+	else
+	{
+		Args += TEXT(" -nomipmaps");
+	}
+
+	if (Options.bNormalMap)
+	{
+		Args += TEXT(" -normal");
+	}
 
 	int32 ReturnCode = -1;
 	FString StdOut;
