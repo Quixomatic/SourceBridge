@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  BSPSRC_VERSION: "v1.4.7"
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -35,6 +38,23 @@ jobs:
 
           # Write to file for the release body
           echo "$NOTES" > release_notes.md
+
+      - name: Download BSPSource
+        run: |
+          curl -L -o bspsrc-windows.zip \
+            "https://github.com/ata4/bspsrc/releases/download/${{ env.BSPSRC_VERSION }}/bspsrc-windows.zip"
+          mkdir -p Resources/tools/bspsrc
+          unzip -o bspsrc-windows.zip -d bspsrc-temp
+          # Move contents into Resources/tools/bspsrc (zip may contain a top-level folder)
+          if [ -d "bspsrc-temp/bspsrc" ]; then
+            cp -r bspsrc-temp/bspsrc/* Resources/tools/bspsrc/
+          elif [ -d "bspsrc-temp/bspsrc-windows" ]; then
+            cp -r bspsrc-temp/bspsrc-windows/* Resources/tools/bspsrc/
+          else
+            # Contents extracted directly
+            cp -r bspsrc-temp/* Resources/tools/bspsrc/
+          fi
+          rm -rf bspsrc-temp bspsrc-windows.zip
 
       - name: Package plugin
         run: |
