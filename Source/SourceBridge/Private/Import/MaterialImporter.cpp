@@ -13,6 +13,7 @@
 #include "Materials/MaterialExpressionVectorParameter.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
 #include "Materials/MaterialExpressionMultiply.h"
+#include "Materials/MaterialExpressionConstant.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Engine/Texture2D.h"
 #include "Misc/FileHelper.h"
@@ -1048,6 +1049,18 @@ UMaterial* FMaterialImporter::GetOrCreateBaseMaterial(ESourceAlphaMode AlphaMode
 
 		Mat->GetEditorOnlyData()->Opacity.Connect(0, MultiplyNode);
 	}
+
+	// Source engine materials are fully diffuse — no specular reflections
+	// Set Roughness=1.0 (fully rough) and Metallic=0.0 to prevent blue sky reflections
+	UMaterialExpressionConstant* RoughnessConst = NewObject<UMaterialExpressionConstant>(Mat);
+	RoughnessConst->R = 1.0f;
+	Mat->GetExpressionCollection().AddExpression(RoughnessConst);
+	Mat->GetEditorOnlyData()->Roughness.Connect(0, RoughnessConst);
+
+	UMaterialExpressionConstant* MetallicConst = NewObject<UMaterialExpressionConstant>(Mat);
+	MetallicConst->R = 0.0f;
+	Mat->GetExpressionCollection().AddExpression(MetallicConst);
+	Mat->GetEditorOnlyData()->Metallic.Connect(0, MetallicConst);
 
 	Mat->PreEditChange(nullptr);
 	Mat->PostEditChange();
