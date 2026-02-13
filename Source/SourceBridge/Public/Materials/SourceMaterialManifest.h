@@ -55,6 +55,18 @@ struct FSourceMaterialEntry
 	UPROPERTY(EditAnywhere)
 	TMap<FString, FString> VMTParams;
 
+	/** Base texture width in pixels (for UV computation) */
+	UPROPERTY(EditAnywhere)
+	int32 TextureWidth = 0;
+
+	/** Base texture height in pixels (for UV computation) */
+	UPROPERTY(EditAnywhere)
+	int32 TextureHeight = 0;
+
+	/** Whether the base texture has alpha */
+	UPROPERTY(EditAnywhere)
+	bool bHasAlpha = false;
+
 	/** Quick check: does this material exist in game VPK? */
 	UPROPERTY(EditAnywhere)
 	bool bIsInVPK = false;

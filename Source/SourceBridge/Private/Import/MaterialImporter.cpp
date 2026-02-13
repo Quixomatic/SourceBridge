@@ -367,6 +367,33 @@ UMaterialInterface* FMaterialImporter::ResolveSourceMaterial(const FString& Sour
 			if (Loaded)
 			{
 				MaterialCache.Add(NormalizedPath, Loaded);
+
+				// Populate TextureInfoCache from manifest so GetTextureSize() works on re-import
+				if (Entry->TextureWidth > 0 && Entry->TextureHeight > 0)
+				{
+					FTextureCacheEntry CacheEntry;
+					CacheEntry.Size = FIntPoint(Entry->TextureWidth, Entry->TextureHeight);
+					CacheEntry.bHasAlpha = Entry->bHasAlpha;
+					TextureInfoCache.Add(NormalizedPath, CacheEntry);
+				}
+				else
+				{
+					// Fallback: read dimensions from the UTexture2D asset
+					UTexture2D* Tex = Cast<UTexture2D>(Entry->TextureAsset.TryLoad());
+					if (Tex)
+					{
+						FTextureCacheEntry CacheEntry;
+						CacheEntry.Size = FIntPoint(Tex->GetSizeX(), Tex->GetSizeY());
+						CacheEntry.bHasAlpha = false;
+						TextureInfoCache.Add(NormalizedPath, CacheEntry);
+
+						// Backfill the manifest entry
+						Entry->TextureWidth = CacheEntry.Size.X;
+						Entry->TextureHeight = CacheEntry.Size.Y;
+						Manifest->MarkDirty();
+					}
+				}
+
 				UE_LOG(LogTemp, Log, TEXT("MaterialImporter: '%s' -> loaded from manifest"), *SourceMaterialPath);
 				return Loaded;
 			}
@@ -616,6 +643,9 @@ UMaterialInterface* FMaterialImporter::CreateMaterialFromVMT(const FString& Sour
 				}
 				Entry.VMTShader = VMTData.ShaderName;
 				Entry.VMTParams = VMTData.Parameters;
+				Entry.TextureWidth = BaseTexture->GetSizeX();
+				Entry.TextureHeight = BaseTexture->GetSizeY();
+				Entry.bHasAlpha = (AlphaMode != ESourceAlphaMode::Opaque);
 				Entry.bIsInVPK = bFoundInVPK;
 				Entry.LastImported = FDateTime::Now();
 				Manifest->Register(Entry);

@@ -295,6 +295,8 @@ UProceduralMeshComponent* ASourceBrushEntity::AddBrushMesh(const FString& MeshNa
 	{
 		ProcMesh->AttachToComponent(RootComponent, FAttachmentTransformRules::KeepRelativeTransform);
 		ProcMesh->SetRelativeTransform(FTransform::Identity);
+		// Mark as instance component so it serializes with the level (survives save/reload)
+		ProcMesh->CreationMethod = EComponentCreationMethod::Instance;
 		ProcMesh->RegisterComponent();
 		BrushMeshes.Add(ProcMesh);
 	}
