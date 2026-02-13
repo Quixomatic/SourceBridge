@@ -4,7 +4,10 @@
 #include "Compile/CompilePipeline.h"
 #include "Models/SMDExporter.h"
 #include "Models/QCWriter.h"
+#include "Models/SourceModelManifest.h"
 #include "Import/ModelImporter.h"
+#include "Import/SourceSoundManifest.h"
+#include "Import/SourceResourceManifest.h"
 #include "Materials/SourceMaterialManifest.h"
 #include "Materials/TextureExporter.h"
 #include "Materials/VMTWriter.h"
@@ -204,15 +207,15 @@ FFullExportResult FFullExportPipeline::RunWithProgress(
 		}
 	}
 
-	// ---- Step 3b: Collect custom imported models (ASourceProp) ----
-	// These already have compiled .mdl/.vvd/.vtx/.phy files from import.
-	// We need to stage them for bspzip packing (stock models are skipped).
+	// ---- Step 3b: Collect custom content for BSP packing (models, sounds, resources) ----
+	// Uses manifests when available, falls back to ad-hoc detection for models.
 	TMap<FString, FString> CustomContentFiles; // internal path → disk path
 	{
-		// Initialize model importer search paths for stock detection
+		// --- Models: use manifest if available, fall back to per-actor scan ---
+		USourceModelManifest* ModelManifest = USourceModelManifest::Get();
 		FModelImporter::SetupGameSearchPaths(Settings.GameName);
 
-		TSet<FString> ProcessedModels; // avoid duplicates
+		TSet<FString> ProcessedModels;
 		for (TActorIterator<ASourceProp> It(World); It; ++It)
 		{
 			ASourceProp* Prop = *It;
@@ -223,32 +226,90 @@ FFullExportResult FFullExportPipeline::RunWithProgress(
 			if (ProcessedModels.Contains(NormPath)) continue;
 			ProcessedModels.Add(NormPath);
 
-			// Skip stock models that exist in game VPKs
-			if (FModelImporter::IsStockModel(NormPath))
+			// Try manifest first
+			bool bHandled = false;
+			if (ModelManifest)
 			{
-				UE_LOG(LogTemp, Verbose, TEXT("SourceBridge: Stock model (skipped): %s"), *NormPath);
-				continue;
+				FSourceModelEntry* ManifestEntry = ModelManifest->FindBySourcePath(NormPath);
+				if (ManifestEntry && !ManifestEntry->bIsStock && ManifestEntry->DiskPaths.Num() > 0)
+				{
+					FString BasePath = FPaths::ChangeExtension(NormPath, TEXT(""));
+					for (const auto& FilePair : ManifestEntry->DiskPaths)
+					{
+						FString InternalPath = BasePath + FilePair.Key;
+						InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+						CustomContentFiles.Add(InternalPath, FilePair.Value);
+					}
+					UE_LOG(LogTemp, Log, TEXT("SourceBridge: Custom model staged (manifest): %s (%d files)"),
+						*NormPath, ManifestEntry->DiskPaths.Num());
+					bHandled = true;
+				}
+				else if (ManifestEntry && ManifestEntry->bIsStock)
+				{
+					UE_LOG(LogTemp, Verbose, TEXT("SourceBridge: Stock model (skipped): %s"), *NormPath);
+					bHandled = true;
+				}
 			}
 
-			// Find the model files on disk
-			TMap<FString, FString> DiskPaths;
-			if (FModelImporter::FindModelDiskPaths(NormPath, DiskPaths))
+			// Fallback: ad-hoc disk path detection (for models imported before manifest existed)
+			if (!bHandled)
 			{
-				FString BasePath = FPaths::ChangeExtension(NormPath, TEXT(""));
-				for (const auto& FilePair : DiskPaths)
+				if (FModelImporter::IsStockModel(NormPath))
 				{
-					// Internal path: "models/foo/bar.mdl" etc.
-					FString InternalPath = BasePath + FilePair.Key;
-					InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
-					CustomContentFiles.Add(InternalPath, FilePair.Value);
+					UE_LOG(LogTemp, Verbose, TEXT("SourceBridge: Stock model (skipped): %s"), *NormPath);
+					continue;
 				}
-				UE_LOG(LogTemp, Log, TEXT("SourceBridge: Custom model staged: %s (%d files)"),
-					*NormPath, DiskPaths.Num());
+
+				TMap<FString, FString> DiskPaths;
+				if (FModelImporter::FindModelDiskPaths(NormPath, DiskPaths))
+				{
+					FString BasePath = FPaths::ChangeExtension(NormPath, TEXT(""));
+					for (const auto& FilePair : DiskPaths)
+					{
+						FString InternalPath = BasePath + FilePair.Key;
+						InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+						CustomContentFiles.Add(InternalPath, FilePair.Value);
+					}
+					UE_LOG(LogTemp, Log, TEXT("SourceBridge: Custom model staged (fallback): %s (%d files)"),
+						*NormPath, DiskPaths.Num());
+				}
+				else
+				{
+					Result.Warnings.Add(FString::Printf(
+						TEXT("[Models] Custom model files not found on disk: %s"), *NormPath));
+				}
 			}
-			else
+		}
+
+		// --- Sounds: pack custom sounds from manifest ---
+		USourceSoundManifest* SoundManifest = USourceSoundManifest::Get();
+		if (SoundManifest)
+		{
+			for (FSourceSoundEntry& SoundEntry : SoundManifest->Entries)
 			{
-				Result.Warnings.Add(FString::Printf(
-					TEXT("[Models] Custom model files not found on disk: %s"), *NormPath));
+				if (SoundEntry.bIsStock) continue;
+				if (SoundEntry.DiskPath.IsEmpty()) continue;
+				if (!FPaths::FileExists(SoundEntry.DiskPath)) continue;
+
+				FString InternalPath = SoundEntry.SourcePath;
+				InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+				CustomContentFiles.Add(InternalPath, SoundEntry.DiskPath);
+			}
+		}
+
+		// --- Resources: pack overview/config files from manifest ---
+		USourceResourceManifest* ResourceManifest = USourceResourceManifest::Get();
+		if (ResourceManifest)
+		{
+			for (FSourceResourceEntry& ResEntry : ResourceManifest->Entries)
+			{
+				if (ResEntry.Origin == ESourceResourceOrigin::Stock) continue;
+				if (ResEntry.DiskPath.IsEmpty()) continue;
+				if (!FPaths::FileExists(ResEntry.DiskPath)) continue;
+
+				FString InternalPath = ResEntry.SourcePath;
+				InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+				CustomContentFiles.Add(InternalPath, ResEntry.DiskPath);
 			}
 		}
 

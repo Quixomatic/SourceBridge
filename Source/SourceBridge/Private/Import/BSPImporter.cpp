@@ -2,6 +2,9 @@
 #include "Import/VMFImporter.h"
 #include "Import/MaterialImporter.h"
 #include "Import/ModelImporter.h"
+#include "Import/SoundImporter.h"
+#include "Import/SourceResourceManifest.h"
+#include "Models/SourceModelManifest.h"
 #include "Import/VTFReader.h"
 #include "UI/SourceBridgeSettings.h"
 #include "Misc/Paths.h"
@@ -22,7 +25,7 @@ FVMFImportResult FBSPImporter::ImportFile(const FString& BSPPath, UWorld* World,
 
 	FString MapName = FPaths::GetBaseFilename(BSPPath);
 
-	FScopedSlowTask SlowTask(4.0f, FText::FromString(FString::Printf(TEXT("Importing %s..."), *MapName)));
+	FScopedSlowTask SlowTask(5.0f, FText::FromString(FString::Printf(TEXT("Importing %s..."), *MapName)));
 	SlowTask.MakeDialog(true);
 
 	// Output to Saved/SourceBridge/Import/<mapname>/ (absolute path for external tools)
@@ -93,12 +96,84 @@ FVMFImportResult FBSPImporter::ImportFile(const FString& BSPPath, UWorld* World,
 	// (Set it in the console or code before import if you need to inspect textures)
 	FVTFReader::DebugDumpPath = OutputDir / TEXT("Debug_Textures");
 
-	// Step 3: Import the decompiled VMF
-	SlowTask.EnterProgressFrame(2.0f, FText::FromString(TEXT("Importing VMF...")));
+	// Step 3: Import sounds from extracted BSP content
+	SlowTask.EnterProgressFrame(0.5f, FText::FromString(TEXT("Importing sounds...")));
+	{
+		int32 SoundCount = FSoundImporter::ImportSoundsFromDirectory(AssetSearchDir);
+		if (SoundCount > 0)
+		{
+			UE_LOG(LogTemp, Log, TEXT("BSPImporter: Imported %d sounds"), SoundCount);
+		}
+	}
+
+	// Step 4: Import resource files (overviews, configs)
+	SlowTask.EnterProgressFrame(0.5f, FText::FromString(TEXT("Importing resources...")));
+	{
+		USourceResourceManifest* ResourceManifest = USourceResourceManifest::Get();
+		if (ResourceManifest)
+		{
+			int32 ResourceCount = 0;
+
+			// Import overview/radar config files
+			FString ResourceDir = AssetSearchDir / TEXT("resource");
+			if (FPaths::DirectoryExists(ResourceDir))
+			{
+				TArray<FString> ResourceFiles;
+				IFileManager::Get().FindFilesRecursive(ResourceFiles, *ResourceDir, TEXT("*.*"), true, false);
+				for (const FString& ResFile : ResourceFiles)
+				{
+					FString RelPath = ResFile;
+					FPaths::MakePathRelativeTo(RelPath, *(AssetSearchDir + TEXT("/")));
+					RelPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+
+					FSourceResourceEntry Entry;
+					Entry.SourcePath = RelPath;
+					Entry.Origin = ESourceResourceOrigin::Imported;
+					Entry.DiskPath = ResFile;
+					Entry.LastImported = FDateTime::Now();
+
+					FString Ext = FPaths::GetExtension(ResFile).ToLower();
+					if (RelPath.Contains(TEXT("overviews")))
+					{
+						Entry.ResourceType = (Ext == TEXT("txt"))
+							? ESourceResourceType::OverviewConfig
+							: ESourceResourceType::Overview;
+
+						// Store text content for config files
+						if (Ext == TEXT("txt"))
+						{
+							FFileHelper::LoadFileToString(Entry.TextContent, *ResFile);
+						}
+					}
+
+					ResourceManifest->Register(Entry);
+					ResourceCount++;
+				}
+			}
+
+			if (ResourceCount > 0)
+			{
+				ResourceManifest->SaveManifest();
+				UE_LOG(LogTemp, Log, TEXT("BSPImporter: Imported %d resource files"), ResourceCount);
+			}
+		}
+	}
+
+	// Step 5: Import the decompiled VMF (geometry, entities, materials, models)
+	SlowTask.EnterProgressFrame(1.0f, FText::FromString(TEXT("Importing VMF...")));
 
 	FVMFImportSettings ImportSettings = Settings;
 	ImportSettings.AssetSearchPath = AssetSearchDir;
 	Result = FVMFImporter::ImportFile(VMFPath, World, ImportSettings);
+
+	// Save model manifest after VMF import (models are registered during ResolveModel calls)
+	{
+		USourceModelManifest* ModelManifest = USourceModelManifest::Get();
+		if (ModelManifest && ModelManifest->Num() > 0)
+		{
+			ModelManifest->SaveManifest();
+		}
+	}
 
 	return Result;
 }

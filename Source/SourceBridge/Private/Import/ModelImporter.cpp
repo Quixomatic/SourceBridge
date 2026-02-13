@@ -1,6 +1,7 @@
 #include "Import/ModelImporter.h"
 #include "Import/MDLReader.h"
 #include "Import/MaterialImporter.h"
+#include "Models/SourceModelManifest.h"
 #include "Compile/CompilePipeline.h"
 #include "Engine/StaticMesh.h"
 #include "MeshDescription.h"
@@ -770,6 +771,37 @@ UStaticMesh* FModelImporter::ResolveModel(const FString& SourceModelPath, int32 
 	// Create UStaticMesh from parsed data
 	UStaticMesh* Mesh = CreateStaticMesh(*ParsedData, SourceModelPath, SkinIndex);
 	ModelCache.Add(CacheKey, Mesh);
+
+	// Register in model manifest for asset management and export packing
+	if (Mesh)
+	{
+		USourceModelManifest* ModelManifest = USourceModelManifest::Get();
+		if (ModelManifest)
+		{
+			FSourceModelEntry ManifestEntry;
+			ManifestEntry.SourcePath = NormPath;
+			ManifestEntry.MeshAsset = FSoftObjectPath(Mesh);
+			ManifestEntry.bIsStock = IsStockModel(NormPath);
+			ManifestEntry.Type = ManifestEntry.bIsStock ? ESourceModelType::Stock : ESourceModelType::Imported;
+			ManifestEntry.SurfaceProp = ParsedData->SurfaceProp;
+			ManifestEntry.bIsStaticProp = ParsedData->bIsStaticProp;
+			ManifestEntry.ModelMass = ParsedData->Mass;
+			ManifestEntry.CDMaterials = ParsedData->MaterialSearchDirs;
+			ManifestEntry.LastImported = FDateTime::Now();
+
+			// Collect disk paths for non-stock models (used by export packing)
+			if (!ManifestEntry.bIsStock)
+			{
+				TMap<FString, FString> FilePaths;
+				if (FindModelDiskPaths(NormPath, FilePaths))
+				{
+					ManifestEntry.DiskPaths = MoveTemp(FilePaths);
+				}
+			}
+
+			ModelManifest->Register(ManifestEntry);
+		}
+	}
 
 	return Mesh;
 }
