@@ -147,20 +147,25 @@ USoundWave* FSoundImporter::ImportSound(const FString& SourcePath, const FString
 		return nullptr;
 	}
 
-	// Set properties from WAV header
+	// Set properties from WAV header (match SoundFactory.cpp pattern)
 	SoundWave->SetSampleRate(Header.SampleRate);
 	SoundWave->NumChannels = Header.NumChannels;
 
+	int32 NumFrames = 0;
 	if (Header.DataSize > 0 && Header.SampleRate > 0 && Header.NumChannels > 0 && Header.BitsPerSample > 0)
 	{
 		int32 BytesPerSample = Header.BitsPerSample / 8;
-		int32 TotalSamples = Header.DataSize / (BytesPerSample * Header.NumChannels);
-		SoundWave->Duration = (float)TotalSamples / (float)Header.SampleRate;
+		NumFrames = Header.DataSize / (BytesPerSample * Header.NumChannels);
+		SoundWave->Duration = (float)NumFrames / (float)Header.SampleRate;
 	}
 
+#if WITH_EDITORONLY_DATA
+	SoundWave->SetImportedSampleRate(Header.SampleRate);
+#endif
+	SoundWave->TotalSamples = Header.SampleRate * SoundWave->Duration;
+
 	// Store the raw WAV data as bulk data so UE can decode it
-	FSharedBuffer SharedBuf = FSharedBuffer::Clone(WAVData.GetData(), WAVData.Num());
-	SoundWave->RawData.UpdatePayload(MoveTemp(SharedBuf), SoundWave);
+	SoundWave->RawData.UpdatePayload(FSharedBuffer::Clone(WAVData.GetData(), WAVData.Num()));
 
 	// Save the asset
 	Package->MarkPackageDirty();

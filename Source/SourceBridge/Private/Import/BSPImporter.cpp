@@ -96,7 +96,15 @@ FVMFImportResult FBSPImporter::ImportFile(const FString& BSPPath, UWorld* World,
 	// (Set it in the console or code before import if you need to inspect textures)
 	FVTFReader::DebugDumpPath = OutputDir / TEXT("Debug_Textures");
 
-	// Step 3: Import sounds from extracted BSP content
+	// Step 3: Import the decompiled VMF (geometry, entities, materials, models)
+	SlowTask.EnterProgressFrame(2.0f, FText::FromString(TEXT("Importing VMF...")));
+
+	FVMFImportSettings ImportSettings = Settings;
+	ImportSettings.AssetSearchPath = AssetSearchDir;
+	Result = FVMFImporter::ImportFile(VMFPath, World, ImportSettings);
+
+	// Step 4: Post-VMF manifest saves and asset imports (these run AFTER geometry is loaded
+	// to avoid any interference with the material/model import pipeline)
 	SlowTask.EnterProgressFrame(0.5f, FText::FromString(TEXT("Importing sounds...")));
 	{
 		int32 SoundCount = FSoundImporter::ImportSoundsFromDirectory(AssetSearchDir);
@@ -106,7 +114,6 @@ FVMFImportResult FBSPImporter::ImportFile(const FString& BSPPath, UWorld* World,
 		}
 	}
 
-	// Step 4: Import resource files (overviews, configs)
 	SlowTask.EnterProgressFrame(0.5f, FText::FromString(TEXT("Importing resources...")));
 	{
 		USourceResourceManifest* ResourceManifest = USourceResourceManifest::Get();
@@ -158,13 +165,6 @@ FVMFImportResult FBSPImporter::ImportFile(const FString& BSPPath, UWorld* World,
 			}
 		}
 	}
-
-	// Step 5: Import the decompiled VMF (geometry, entities, materials, models)
-	SlowTask.EnterProgressFrame(1.0f, FText::FromString(TEXT("Importing VMF...")));
-
-	FVMFImportSettings ImportSettings = Settings;
-	ImportSettings.AssetSearchPath = AssetSearchDir;
-	Result = FVMFImporter::ImportFile(VMFPath, World, ImportSettings);
 
 	// Save model manifest after VMF import (models are registered during ResolveModel calls)
 	{

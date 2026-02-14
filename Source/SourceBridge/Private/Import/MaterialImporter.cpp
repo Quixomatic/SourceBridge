@@ -1249,6 +1249,15 @@ bool FMaterialImporter::FindVTFBytes(const FString& TexturePath, TArray<uint8>& 
 
 		if (FPaths::FileExists(VTFFullPath))
 		{
+			// Validate file size before loading — skip empty or suspiciously large files
+			int64 FileSize = IFileManager::Get().FileSize(*VTFFullPath);
+			if (FileSize <= 0 || FileSize > 128 * 1024 * 1024)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("MaterialImporter: Skipping VTF with bad size (%lld bytes): %s"),
+					FileSize, *VTFFullPath);
+				continue;
+			}
+
 			if (FFileHelper::LoadFileToArray(OutFileData, *VTFFullPath))
 			{
 				UE_LOG(LogTemp, Verbose, TEXT("MaterialImporter: Found VTF at: %s"), *VTFFullPath);
