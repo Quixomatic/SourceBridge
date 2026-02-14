@@ -17,6 +17,7 @@ struct FModelDisplayEntry
 	bool bIsStaticProp = true;
 	float Mass = 0.0f;
 	FSoftObjectPath MeshAsset;
+	bool bForcePack = false;
 };
 
 /** Display entry for sound list */
@@ -29,6 +30,7 @@ struct FSoundDisplayEntry
 	int32 SampleRate = 0;
 	int32 NumChannels = 0;
 	FSoftObjectPath SoundAsset;
+	bool bForcePack = false;
 };
 
 /** Display entry for resource list */
@@ -39,6 +41,7 @@ struct FResourceDisplayEntry
 	int32 FilterType = 0;
 	FString ResourceTypeStr;
 	FString DiskPath;
+	bool bForcePack = false;
 };
 
 enum class EAssetManagerTab : uint8

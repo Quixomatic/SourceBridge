@@ -74,6 +74,10 @@ struct FSourceMaterialEntry
 	/** When this material was last imported/updated */
 	UPROPERTY(EditAnywhere)
 	FDateTime LastImported;
+
+	/** Force this material to be packed into every export, regardless of auto-detect */
+	UPROPERTY(EditAnywhere)
+	bool bForcePack = false;
 };
 
 /**

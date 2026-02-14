@@ -67,6 +67,10 @@ struct FSourceModelEntry
 	/** When this model was last imported/updated */
 	UPROPERTY(EditAnywhere)
 	FDateTime LastImported;
+
+	/** Force this model to be packed into every export, regardless of entity references */
+	UPROPERTY(EditAnywhere)
+	bool bForcePack = false;
 };
 
 /**

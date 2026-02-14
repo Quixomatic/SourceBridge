@@ -61,6 +61,10 @@ struct FSourceSoundEntry
 	/** When this sound was last imported/updated */
 	UPROPERTY(EditAnywhere)
 	FDateTime LastImported;
+
+	/** Force this sound to be packed into every export, regardless of entity references */
+	UPROPERTY(EditAnywhere)
+	bool bForcePack = false;
 };
 
 /**

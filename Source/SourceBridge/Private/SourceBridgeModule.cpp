@@ -82,7 +82,7 @@ void FSourceBridgeModule::StartupModule()
 
 	ExportSceneCommand = MakeShared<FAutoConsoleCommand>(
 		TEXT("SourceBridge.ExportScene"),
-		TEXT("Export current level brushes to VMF. Usage: SourceBridge.ExportScene <filepath>"),
+		TEXT("Export current level to VMF with all content files. Usage: SourceBridge.ExportScene [mapname] [game_name]"),
 		FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
 		{
 			UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
@@ -92,35 +92,28 @@ void FSourceBridgeModule::StartupModule()
 				return;
 			}
 
-			FString OutputPath;
+			FFullExportSettings Settings;
+			Settings.bCompile = false;
+			Settings.bValidate = false;
+
 			if (Args.Num() > 0)
 			{
-				OutputPath = Args[0];
+				Settings.MapName = Args[0];
+			}
+			if (Args.Num() > 1)
+			{
+				Settings.GameName = Args[1];
+			}
+
+			FFullExportResult Result = FFullExportPipeline::Run(World, Settings);
+
+			if (Result.bSuccess)
+			{
+				UE_LOG(LogTemp, Log, TEXT("SourceBridge: Scene exported to: %s"), *FPaths::GetPath(Result.VMFPath));
 			}
 			else
 			{
-				OutputPath = FPaths::ProjectSavedDir() / TEXT("SourceBridge") / TEXT("export.vmf");
-			}
-
-			FString VMFContent = FVMFExporter::ExportScene(World);
-
-			if (VMFContent.IsEmpty())
-			{
-				UE_LOG(LogTemp, Error, TEXT("SourceBridge: Export produced empty VMF."));
-				return;
-			}
-
-			FString Directory = FPaths::GetPath(OutputPath);
-			IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
-			PlatformFile.CreateDirectoryTree(*Directory);
-
-			if (FFileHelper::SaveStringToFile(VMFContent, *OutputPath))
-			{
-				UE_LOG(LogTemp, Log, TEXT("SourceBridge: Scene exported to: %s"), *OutputPath);
-			}
-			else
-			{
-				UE_LOG(LogTemp, Error, TEXT("SourceBridge: Failed to write VMF to: %s"), *OutputPath);
+				UE_LOG(LogTemp, Error, TEXT("SourceBridge: Export failed: %s"), *Result.ErrorMessage);
 			}
 		})
 	);

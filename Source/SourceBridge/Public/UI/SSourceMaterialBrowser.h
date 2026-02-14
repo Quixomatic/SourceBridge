@@ -116,6 +116,7 @@ private:
 	TSharedRef<ITableRow> OnGenerateMaterialRow(TSharedPtr<FMaterialBrowserEntry> Item, const TSharedRef<STableViewBase>& OwnerTable);
 	void OnMaterialSelectionChanged(TSharedPtr<FMaterialBrowserEntry> Item, ESelectInfo::Type SelectInfo);
 	void OnMaterialDoubleClicked(TSharedPtr<FMaterialBrowserEntry> Item);
+	TSharedPtr<SWidget> OnMaterialContextMenu();
 
 	// Apply
 	FReply OnApplyToSelected();

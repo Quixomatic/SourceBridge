@@ -35,6 +35,11 @@ struct SOURCEBRIDGE_API FFullExportSettings
 
 	/** Create a distributable package folder with all game files */
 	bool bPackage = false;
+
+	/** Pack all non-stock manifest assets regardless of entity references.
+	 *  When false (default), uses FGD-aware auto-detect to only pack referenced assets.
+	 *  Force-packed entries (bForcePack) are always included either way. */
+	bool bPackAllManifestAssets = false;
 };
 
 /**

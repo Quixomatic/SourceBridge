@@ -71,6 +71,10 @@ struct FSourceResourceEntry
 	/** When this resource was last imported/updated */
 	UPROPERTY(EditAnywhere)
 	FDateTime LastImported;
+
+	/** Force this resource to be packed into every export, regardless of auto-detect */
+	UPROPERTY(EditAnywhere)
+	bool bForcePack = false;
 };
 
 /**

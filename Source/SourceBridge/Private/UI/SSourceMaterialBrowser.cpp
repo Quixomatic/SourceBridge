@@ -25,6 +25,8 @@
 #include "Framework/Docking/TabManager.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Styling/AppStyle.h"
+#include "HAL/PlatformApplicationMisc.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
 
 #define LOCTEXT_NAMESPACE "SourceMaterialBrowser"
 
@@ -158,6 +160,7 @@ void SSourceMaterialBrowser::Construct(const FArguments& InArgs)
 					.OnGenerateRow(this, &SSourceMaterialBrowser::OnGenerateMaterialRow)
 					.OnSelectionChanged(this, &SSourceMaterialBrowser::OnMaterialSelectionChanged)
 					.OnMouseButtonDoubleClick(this, &SSourceMaterialBrowser::OnMaterialDoubleClicked)
+					.OnContextMenuOpening(this, &SSourceMaterialBrowser::OnMaterialContextMenu)
 					.SelectionMode(ESelectionMode::Single)
 				]
 			]
@@ -705,6 +708,70 @@ void SSourceMaterialBrowser::OnMaterialDoubleClicked(TSharedPtr<FMaterialBrowser
 	// Double-click = apply to selected actors
 	SelectedMaterial = Item;
 	OnApplyToSelected();
+}
+
+TSharedPtr<SWidget> SSourceMaterialBrowser::OnMaterialContextMenu()
+{
+	TArray<TSharedPtr<FMaterialBrowserEntry>> Selected = MaterialListView->GetSelectedItems();
+	if (Selected.Num() == 0) return nullptr;
+
+	TSharedPtr<FMaterialBrowserEntry> Item = Selected[0];
+
+	FMenuBuilder MenuBuilder(true, nullptr);
+
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("CopyMatPath", "Copy Source Path"),
+		FText::GetEmpty(),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateLambda([Path = Item->SourcePath]() {
+			FPlatformApplicationMisc::ClipboardCopy(*Path);
+		}))
+	);
+
+	MenuBuilder.AddMenuEntry(
+		LOCTEXT("ApplyToSel", "Apply to Selected"),
+		FText::GetEmpty(),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateLambda([this]() {
+			OnApplyToSelected();
+		}))
+	);
+
+	if (Item->bInManifest)
+	{
+		MenuBuilder.AddSeparator();
+
+		USourceMaterialManifest* Manifest = USourceMaterialManifest::Get();
+		bool bCurrentForcePack = false;
+		if (Manifest)
+		{
+			const FSourceMaterialEntry* Entry = Manifest->FindBySourcePath(Item->SourcePath);
+			if (Entry) bCurrentForcePack = Entry->bForcePack;
+		}
+
+		MenuBuilder.AddMenuEntry(
+			bCurrentForcePack
+				? LOCTEXT("UnforcePackMat", "Remove Force Pack")
+				: LOCTEXT("ForcePackMat", "Force Pack"),
+			LOCTEXT("ForcePackMatTip", "Always include this material in exports regardless of usage"),
+			FSlateIcon(),
+			FUIAction(FExecuteAction::CreateLambda([this, Path = Item->SourcePath, bCurrent = bCurrentForcePack]() {
+				USourceMaterialManifest* Mat = USourceMaterialManifest::Get();
+				if (Mat)
+				{
+					FSourceMaterialEntry* Entry = Mat->FindBySourcePath(Path);
+					if (Entry)
+					{
+						Entry->bForcePack = !bCurrent;
+						Mat->MarkDirty();
+						Mat->SaveManifest();
+					}
+				}
+			}))
+		);
+	}
+
+	return MenuBuilder.MakeWidget();
 }
 
 // ============================================================================

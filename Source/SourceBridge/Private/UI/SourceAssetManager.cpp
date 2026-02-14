@@ -271,6 +271,7 @@ void SSourceAssetManager::RefreshModels()
 			Display->bIsStaticProp = Entry.bIsStaticProp;
 			Display->Mass = Entry.ModelMass;
 			Display->MeshAsset = Entry.MeshAsset;
+			Display->bForcePack = Entry.bForcePack;
 
 			switch (Entry.Type)
 			{
@@ -343,6 +344,19 @@ TSharedRef<ITableRow> SSourceAssetManager::OnGenerateModelRow(
 			]
 		]
 
+		// Force-pack indicator
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.Padding(2, 2)
+		.VAlign(VAlign_Center)
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("ForcePack", "P"))
+			.Font(FCoreStyle::GetDefaultFontStyle("Bold", 8))
+			.ColorAndOpacity(FSlateColor(FLinearColor(1.0f, 0.4f, 0.1f)))
+			.Visibility(Item->bForcePack ? EVisibility::Visible : EVisibility::Collapsed)
+		]
+
 		// Source path
 		+ SHorizontalBox::Slot()
 		.FillWidth(1.0f)
@@ -410,6 +424,30 @@ TSharedPtr<SWidget> SSourceAssetManager::OnModelContextMenu()
 		);
 	}
 
+	MenuBuilder.AddSeparator();
+
+	MenuBuilder.AddMenuEntry(
+		Item->bForcePack
+			? LOCTEXT("UnforcePackModel", "Remove Force Pack")
+			: LOCTEXT("ForcePackModel", "Force Pack"),
+		LOCTEXT("ForcePackModelTip", "Always include this model in exports regardless of entity references"),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateLambda([this, Path = Item->SourcePath, bCurrent = Item->bForcePack]() {
+			USourceModelManifest* Manifest = USourceModelManifest::Get();
+			if (Manifest)
+			{
+				FSourceModelEntry* Entry = Manifest->FindBySourcePath(Path);
+				if (Entry)
+				{
+					Entry->bForcePack = !bCurrent;
+					Manifest->MarkDirty();
+					Manifest->SaveManifest();
+					RefreshModels();
+				}
+			}
+		}))
+	);
+
 	return MenuBuilder.MakeWidget();
 }
 
@@ -430,6 +468,7 @@ void SSourceAssetManager::RefreshSounds()
 			Display->SampleRate = Entry.SampleRate;
 			Display->NumChannels = Entry.NumChannels;
 			Display->SoundAsset = Entry.SoundAsset;
+			Display->bForcePack = Entry.bForcePack;
 
 			switch (Entry.Type)
 			{
@@ -525,6 +564,19 @@ TSharedRef<ITableRow> SSourceAssetManager::OnGenerateSoundRow(
 			]
 		]
 
+		// Force-pack indicator
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.Padding(2, 2)
+		.VAlign(VAlign_Center)
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("ForcePackSound", "P"))
+			.Font(FCoreStyle::GetDefaultFontStyle("Bold", 8))
+			.ColorAndOpacity(FSlateColor(FLinearColor(1.0f, 0.4f, 0.1f)))
+			.Visibility(Item->bForcePack ? EVisibility::Visible : EVisibility::Collapsed)
+		]
+
 		// Source path
 		+ SHorizontalBox::Slot()
 		.FillWidth(1.0f)
@@ -611,6 +663,30 @@ TSharedPtr<SWidget> SSourceAssetManager::OnSoundContextMenu()
 		);
 	}
 
+	MenuBuilder.AddSeparator();
+
+	MenuBuilder.AddMenuEntry(
+		Item->bForcePack
+			? LOCTEXT("UnforcePackSound", "Remove Force Pack")
+			: LOCTEXT("ForcePackSound2", "Force Pack"),
+		LOCTEXT("ForcePackSoundTip", "Always include this sound in exports regardless of entity references"),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateLambda([this, Path = Item->SourcePath, bCurrent = Item->bForcePack]() {
+			USourceSoundManifest* Manifest = USourceSoundManifest::Get();
+			if (Manifest)
+			{
+				FSourceSoundEntry* Entry = Manifest->FindBySourcePath(Path);
+				if (Entry)
+				{
+					Entry->bForcePack = !bCurrent;
+					Manifest->MarkDirty();
+					Manifest->SaveManifest();
+					RefreshSounds();
+				}
+			}
+		}))
+	);
+
 	return MenuBuilder.MakeWidget();
 }
 
@@ -649,6 +725,7 @@ void SSourceAssetManager::RefreshResources()
 			TSharedPtr<FResourceDisplayEntry> Display = MakeShared<FResourceDisplayEntry>();
 			Display->SourcePath = Entry.SourcePath;
 			Display->DiskPath = Entry.DiskPath;
+			Display->bForcePack = Entry.bForcePack;
 
 			switch (Entry.ResourceType)
 			{
@@ -723,6 +800,19 @@ TSharedRef<ITableRow> SSourceAssetManager::OnGenerateResourceRow(
 			]
 		]
 
+		// Force-pack indicator
+		+ SHorizontalBox::Slot()
+		.AutoWidth()
+		.Padding(2, 2)
+		.VAlign(VAlign_Center)
+		[
+			SNew(STextBlock)
+			.Text(LOCTEXT("ForcePackRes", "P"))
+			.Font(FCoreStyle::GetDefaultFontStyle("Bold", 8))
+			.ColorAndOpacity(FSlateColor(FLinearColor(1.0f, 0.4f, 0.1f)))
+			.Visibility(Item->bForcePack ? EVisibility::Visible : EVisibility::Collapsed)
+		]
+
 		// Resource type
 		+ SHorizontalBox::Slot()
 		.AutoWidth()
@@ -776,6 +866,30 @@ TSharedPtr<SWidget> SSourceAssetManager::OnResourceContextMenu()
 			}))
 		);
 	}
+
+	MenuBuilder.AddSeparator();
+
+	MenuBuilder.AddMenuEntry(
+		Item->bForcePack
+			? LOCTEXT("UnforcePackRes", "Remove Force Pack")
+			: LOCTEXT("ForcePackRes2", "Force Pack"),
+		LOCTEXT("ForcePackResTip", "Always include this resource in exports"),
+		FSlateIcon(),
+		FUIAction(FExecuteAction::CreateLambda([this, Path = Item->SourcePath, bCurrent = Item->bForcePack]() {
+			USourceResourceManifest* Manifest = USourceResourceManifest::Get();
+			if (Manifest)
+			{
+				FSourceResourceEntry* Entry = Manifest->FindBySourcePath(Path);
+				if (Entry)
+				{
+					Entry->bForcePack = !bCurrent;
+					Manifest->MarkDirty();
+					Manifest->SaveManifest();
+					RefreshResources();
+				}
+			}
+		}))
+	);
 
 	return MenuBuilder.MakeWidget();
 }

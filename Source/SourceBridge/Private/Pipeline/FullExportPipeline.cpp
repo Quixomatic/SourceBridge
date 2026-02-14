@@ -13,6 +13,8 @@
 #include "Materials/VMTWriter.h"
 #include "Materials/MaterialAnalyzer.h"
 #include "Actors/SourceEntityActor.h"
+#include "Entities/FGDParser.h"
+#include "SourceBridgeModule.h"
 #include "HAL/PlatformFilemanager.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -207,171 +209,316 @@ FFullExportResult FFullExportPipeline::RunWithProgress(
 		}
 	}
 
-	// ---- Step 3b: Collect custom content for BSP packing (models, sounds, resources) ----
-	// Uses manifests when available, falls back to ad-hoc detection for models.
-	TMap<FString, FString> CustomContentFiles; // internal path → disk path
+	// ---- Step 3b: Collect custom content for packing ----
+	// Uses FGD-aware entity scanning (auto-detect), force-pack overrides, and pack-all toggle.
+	// Collected files are staged to the output folder AND tracked for bspzip packing.
+	TMap<FString, FString> CustomContentFiles; // internal path → staged disk path
 	{
-		// --- Models: use manifest if available, fall back to per-actor scan ---
+		ReportProgress(TEXT("Collecting custom content..."), 0.3f);
+		UE_LOG(LogTemp, Log, TEXT("SourceBridge: === Content Collection ==="));
+
+		// Get manifests
 		USourceModelManifest* ModelManifest = USourceModelManifest::Get();
+		USourceSoundManifest* SoundManifest = USourceSoundManifest::Get();
+		USourceResourceManifest* ResourceManifest = USourceResourceManifest::Get();
 		FModelImporter::SetupGameSearchPaths(Settings.GameName);
 
-		TSet<FString> ProcessedModels;
-		for (TActorIterator<ASourceProp> It(World); It; ++It)
+		// Sets of Source paths we want to pack (normalized lowercase, forward slashes)
+		TSet<FString> ReferencedModelPaths;
+		TSet<FString> ReferencedSoundPaths;
+
+		// Counters for logging
+		int32 EntityCount = 0;
+		int32 ModelRefsFound = 0;
+		int32 SoundRefsFound = 0;
+
+		if (Settings.bPackAllManifestAssets)
 		{
-			ASourceProp* Prop = *It;
-			if (!Prop || Prop->ModelPath.IsEmpty()) continue;
-
-			FString NormPath = Prop->ModelPath.ToLower();
-			NormPath.ReplaceInline(TEXT("\\"), TEXT("/"));
-			if (ProcessedModels.Contains(NormPath)) continue;
-			ProcessedModels.Add(NormPath);
-
-			// Try manifest first
-			bool bHandled = false;
-			if (ModelManifest)
-			{
-				FSourceModelEntry* ManifestEntry = ModelManifest->FindBySourcePath(NormPath);
-				if (ManifestEntry && !ManifestEntry->bIsStock && ManifestEntry->DiskPaths.Num() > 0)
-				{
-					FString BasePath = FPaths::ChangeExtension(NormPath, TEXT(""));
-					for (const auto& FilePair : ManifestEntry->DiskPaths)
-					{
-						FString InternalPath = BasePath + FilePair.Key;
-						InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
-						CustomContentFiles.Add(InternalPath, FilePair.Value);
-					}
-					UE_LOG(LogTemp, Log, TEXT("SourceBridge: Custom model staged (manifest): %s (%d files)"),
-						*NormPath, ManifestEntry->DiskPaths.Num());
-					bHandled = true;
-				}
-				else if (ManifestEntry && ManifestEntry->bIsStock)
-				{
-					UE_LOG(LogTemp, Verbose, TEXT("SourceBridge: Stock model (skipped): %s"), *NormPath);
-					bHandled = true;
-				}
-			}
-
-			// Fallback: ad-hoc disk path detection (for models imported before manifest existed)
-			if (!bHandled)
-			{
-				if (FModelImporter::IsStockModel(NormPath))
-				{
-					UE_LOG(LogTemp, Verbose, TEXT("SourceBridge: Stock model (skipped): %s"), *NormPath);
-					continue;
-				}
-
-				TMap<FString, FString> DiskPaths;
-				if (FModelImporter::FindModelDiskPaths(NormPath, DiskPaths))
-				{
-					FString BasePath = FPaths::ChangeExtension(NormPath, TEXT(""));
-					for (const auto& FilePair : DiskPaths)
-					{
-						FString InternalPath = BasePath + FilePair.Key;
-						InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
-						CustomContentFiles.Add(InternalPath, FilePair.Value);
-					}
-					UE_LOG(LogTemp, Log, TEXT("SourceBridge: Custom model staged (fallback): %s (%d files)"),
-						*NormPath, DiskPaths.Num());
-				}
-				else
-				{
-					Result.Warnings.Add(FString::Printf(
-						TEXT("[Models] Custom model files not found on disk: %s"), *NormPath));
-				}
-			}
+			UE_LOG(LogTemp, Log, TEXT("SourceBridge: Pack-all mode: including all non-stock manifest assets"));
 		}
-
-		// --- Sounds: scan entities for sound references, pack from manifest ---
-		USourceSoundManifest* SoundManifest = USourceSoundManifest::Get();
-		if (SoundManifest && SoundManifest->Entries.Num() > 0)
+		else
 		{
-			// Collect sound paths referenced by entities in the world
-			TSet<FString> ReferencedSoundPaths;
+			// ---- FGD-aware auto-detect: scan entities for asset references ----
+			const FFGDDatabase& FGD = FSourceBridgeModule::GetFGDDatabase();
+			bool bHasFGD = FGD.Classes.Num() > 0;
 
-			static const TArray<FString> SoundKeyNames = {
-				TEXT("message"),       // ambient_generic
-				TEXT("startsound"),    // doors, buttons
-				TEXT("stopsound"),
-				TEXT("movesound"),
-				TEXT("StartSound"),
-				TEXT("StopSound"),
-				TEXT("MoveSound"),
-				TEXT("ClosedSound"),
-				TEXT("LockedSound"),
-				TEXT("UnlockedSound"),
-				TEXT("SoundStart"),
-				TEXT("SoundStop"),
-			};
+			if (bHasFGD)
+			{
+				UE_LOG(LogTemp, Log, TEXT("SourceBridge: Using FGD-aware entity scanning (%d classes loaded)"), FGD.Classes.Num());
+			}
+			else
+			{
+				UE_LOG(LogTemp, Warning, TEXT("SourceBridge: No FGD loaded — using fallback key name scanning"));
+			}
 
 			for (TActorIterator<ASourceEntityActor> It(World); It; ++It)
 			{
 				ASourceEntityActor* Entity = *It;
 				if (!Entity) continue;
+				EntityCount++;
 
-				for (const FString& SoundKey : SoundKeyNames)
+				// Collect model from ASourceProp::ModelPath directly
+				if (ASourceProp* Prop = Cast<ASourceProp>(Entity))
 				{
-					const FString* Val = Entity->KeyValues.Find(SoundKey);
-					if (Val && !Val->IsEmpty())
+					if (!Prop->ModelPath.IsEmpty())
 					{
-						FString NormPath = Val->ToLower();
+						FString NormPath = Prop->ModelPath.ToLower();
 						NormPath.ReplaceInline(TEXT("\\"), TEXT("/"));
-						ReferencedSoundPaths.Add(NormPath);
-						// Also add with sound/ prefix for matching
-						if (!NormPath.StartsWith(TEXT("sound/")))
-							ReferencedSoundPaths.Add(TEXT("sound/") + NormPath);
+						ReferencedModelPaths.Add(NormPath);
+						ModelRefsFound++;
+					}
+				}
+
+				// FGD-aware property scanning
+				if (bHasFGD && !Entity->SourceClassname.IsEmpty())
+				{
+					FFGDEntityClass Resolved = FGD.GetResolved(Entity->SourceClassname);
+					for (const FFGDProperty& Prop : Resolved.Properties)
+					{
+						const FString* Val = Entity->KeyValues.Find(Prop.Name);
+						if (!Val || Val->IsEmpty()) continue;
+
+						FString NormVal = Val->ToLower();
+						NormVal.ReplaceInline(TEXT("\\"), TEXT("/"));
+
+						if (Prop.Type == EFGDPropertyType::Studio || Prop.Type == EFGDPropertyType::Sprite)
+						{
+							ReferencedModelPaths.Add(NormVal);
+							ModelRefsFound++;
+						}
+						else if (Prop.Type == EFGDPropertyType::Sound)
+						{
+							ReferencedSoundPaths.Add(NormVal);
+							if (!NormVal.StartsWith(TEXT("sound/")))
+								ReferencedSoundPaths.Add(TEXT("sound/") + NormVal);
+							SoundRefsFound++;
+						}
+						// Materials are handled separately via VMF export UsedMaterialPaths
+					}
+				}
+				else
+				{
+					// Fallback: hardcoded key name scanning when FGD not loaded
+					static const TArray<FString> SoundKeyNames = {
+						TEXT("message"), TEXT("startsound"), TEXT("stopsound"), TEXT("movesound"),
+						TEXT("StartSound"), TEXT("StopSound"), TEXT("MoveSound"),
+						TEXT("ClosedSound"), TEXT("LockedSound"), TEXT("UnlockedSound"),
+						TEXT("SoundStart"), TEXT("SoundStop"),
+					};
+
+					for (const FString& SoundKey : SoundKeyNames)
+					{
+						const FString* Val = Entity->KeyValues.Find(SoundKey);
+						if (Val && !Val->IsEmpty())
+						{
+							FString NormPath = Val->ToLower();
+							NormPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+							ReferencedSoundPaths.Add(NormPath);
+							if (!NormPath.StartsWith(TEXT("sound/")))
+								ReferencedSoundPaths.Add(TEXT("sound/") + NormPath);
+							SoundRefsFound++;
+						}
+					}
+
+					// Fallback model scanning from keyvalues named "model"
+					const FString* ModelVal = Entity->KeyValues.Find(TEXT("model"));
+					if (ModelVal && !ModelVal->IsEmpty() && ModelVal->EndsWith(TEXT(".mdl")))
+					{
+						FString NormPath = ModelVal->ToLower();
+						NormPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+						ReferencedModelPaths.Add(NormPath);
+						ModelRefsFound++;
 					}
 				}
 			}
 
-			// Pack referenced non-stock sounds
-			int32 SoundPackCount = 0;
-			for (const FSourceSoundEntry& SoundEntry : SoundManifest->Entries)
+			UE_LOG(LogTemp, Log, TEXT("SourceBridge: Scanned %d entities: %d model refs, %d sound refs"),
+				EntityCount, ModelRefsFound, SoundRefsFound);
+		}
+
+		// ---- Collect models ----
+		int32 ModelsStaged = 0;
+		int32 ModelsStock = 0;
+		int32 ModelFiles = 0;
+
+		auto StageModelEntry = [&](const FSourceModelEntry& Entry)
+		{
+			if (Entry.bIsStock) { ModelsStock++; return; }
+			if (Entry.DiskPaths.Num() == 0) return;
+
+			FString BasePath = FPaths::ChangeExtension(Entry.SourcePath.ToLower(), TEXT(""));
+			BasePath.ReplaceInline(TEXT("\\"), TEXT("/"));
+
+			for (const auto& FilePair : Entry.DiskPaths)
 			{
-				if (SoundEntry.bIsStock) continue;
-				if (SoundEntry.DiskPath.IsEmpty()) continue;
-				if (!FPaths::FileExists(SoundEntry.DiskPath)) continue;
-
-				FString NormSourcePath = SoundEntry.SourcePath.ToLower();
-				NormSourcePath.ReplaceInline(TEXT("\\"), TEXT("/"));
-
-				// Check if this sound is referenced by any entity
-				if (ReferencedSoundPaths.Contains(NormSourcePath))
+				if (!FPaths::FileExists(FilePair.Value)) continue;
+				FString InternalPath = BasePath + FilePair.Key;
+				InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+				if (!CustomContentFiles.Contains(InternalPath))
 				{
-					FString InternalPath = SoundEntry.SourcePath;
-					InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
-					CustomContentFiles.Add(InternalPath, SoundEntry.DiskPath);
-					SoundPackCount++;
+					// Stage: copy to output dir
+					FString StagedPath = OutputDir / InternalPath;
+					PlatformFile.CreateDirectoryTree(*FPaths::GetPath(StagedPath));
+					PlatformFile.CopyFile(*StagedPath, *FilePair.Value);
+					CustomContentFiles.Add(InternalPath, StagedPath);
+					ModelFiles++;
+				}
+			}
+			ModelsStaged++;
+		};
+
+		if (ModelManifest)
+		{
+			TSet<FString> ProcessedModels;
+			for (const FSourceModelEntry& Entry : ModelManifest->Entries)
+			{
+				FString NormPath = Entry.SourcePath.ToLower();
+				NormPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+				if (ProcessedModels.Contains(NormPath)) continue;
+				ProcessedModels.Add(NormPath);
+
+				bool bShouldPack = Entry.bForcePack;
+				if (!bShouldPack && Settings.bPackAllManifestAssets)
+					bShouldPack = !Entry.bIsStock;
+				if (!bShouldPack)
+					bShouldPack = ReferencedModelPaths.Contains(NormPath);
+
+				if (bShouldPack)
+				{
+					StageModelEntry(Entry);
+				}
+				else if (Entry.bIsStock)
+				{
+					ModelsStock++;
 				}
 			}
 
-			if (SoundPackCount > 0)
+			// Fallback for models not in manifest (imported before manifest existed)
+			for (const FString& RefPath : ReferencedModelPaths)
 			{
-				UE_LOG(LogTemp, Log, TEXT("SourceBridge: %d custom sound(s) staged for packing (%d entity references found)"),
-					SoundPackCount, ReferencedSoundPaths.Num());
+				if (ProcessedModels.Contains(RefPath)) continue;
+				ProcessedModels.Add(RefPath);
+
+				if (FModelImporter::IsStockModel(RefPath))
+				{
+					ModelsStock++;
+					continue;
+				}
+
+				TMap<FString, FString> DiskPaths;
+				if (FModelImporter::FindModelDiskPaths(RefPath, DiskPaths))
+				{
+					FString BasePath = FPaths::ChangeExtension(RefPath, TEXT(""));
+					for (const auto& FilePair : DiskPaths)
+					{
+						if (!FPaths::FileExists(FilePair.Value)) continue;
+						FString InternalPath = BasePath + FilePair.Key;
+						InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+						if (!CustomContentFiles.Contains(InternalPath))
+						{
+							FString StagedPath = OutputDir / InternalPath;
+							PlatformFile.CreateDirectoryTree(*FPaths::GetPath(StagedPath));
+							PlatformFile.CopyFile(*StagedPath, *FilePair.Value);
+							CustomContentFiles.Add(InternalPath, StagedPath);
+							ModelFiles++;
+						}
+					}
+					ModelsStaged++;
+				}
+				else
+				{
+					Result.Warnings.Add(FString::Printf(
+						TEXT("[Models] Custom model files not found on disk: %s"), *RefPath));
+				}
 			}
 		}
 
-		// --- Resources: pack overview/config files from manifest ---
-		USourceResourceManifest* ResourceManifest = USourceResourceManifest::Get();
+		// ---- Collect sounds ----
+		int32 SoundsStaged = 0;
+		int32 SoundsStock = 0;
+
+		if (SoundManifest)
+		{
+			for (const FSourceSoundEntry& Entry : SoundManifest->Entries)
+			{
+				if (Entry.DiskPath.IsEmpty() || !FPaths::FileExists(Entry.DiskPath))
+				{
+					if (!Entry.bIsStock && !Entry.DiskPath.IsEmpty())
+						Result.Warnings.Add(FString::Printf(TEXT("[Sounds] Disk file missing: %s"), *Entry.DiskPath));
+					continue;
+				}
+
+				if (Entry.bIsStock) { SoundsStock++; continue; }
+
+				FString NormPath = Entry.SourcePath.ToLower();
+				NormPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+
+				bool bShouldPack = Entry.bForcePack;
+				if (!bShouldPack && Settings.bPackAllManifestAssets)
+					bShouldPack = true;
+				if (!bShouldPack)
+					bShouldPack = ReferencedSoundPaths.Contains(NormPath);
+
+				if (bShouldPack)
+				{
+					FString InternalPath = Entry.SourcePath;
+					InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+					if (!CustomContentFiles.Contains(InternalPath))
+					{
+						// Stage: copy to output dir
+						FString StagedPath = OutputDir / InternalPath;
+						PlatformFile.CreateDirectoryTree(*FPaths::GetPath(StagedPath));
+						PlatformFile.CopyFile(*StagedPath, *Entry.DiskPath);
+						CustomContentFiles.Add(InternalPath, StagedPath);
+						SoundsStaged++;
+					}
+				}
+			}
+		}
+
+		// ---- Collect resources ----
+		int32 ResourcesStaged = 0;
+
 		if (ResourceManifest)
 		{
-			for (FSourceResourceEntry& ResEntry : ResourceManifest->Entries)
+			for (const FSourceResourceEntry& Entry : ResourceManifest->Entries)
 			{
-				if (ResEntry.Origin == ESourceResourceOrigin::Stock) continue;
-				if (ResEntry.DiskPath.IsEmpty()) continue;
-				if (!FPaths::FileExists(ResEntry.DiskPath)) continue;
+				if (Entry.Origin == ESourceResourceOrigin::Stock) continue;
+				if (Entry.DiskPath.IsEmpty() || !FPaths::FileExists(Entry.DiskPath))
+				{
+					if (!Entry.DiskPath.IsEmpty())
+						Result.Warnings.Add(FString::Printf(TEXT("[Resources] Disk file missing: %s"), *Entry.DiskPath));
+					continue;
+				}
 
-				FString InternalPath = ResEntry.SourcePath;
-				InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
-				CustomContentFiles.Add(InternalPath, ResEntry.DiskPath);
+				bool bShouldPack = Entry.bForcePack;
+				if (!bShouldPack)
+					bShouldPack = true; // Resources always packed (overviews, configs)
+
+				if (bShouldPack)
+				{
+					FString InternalPath = Entry.SourcePath;
+					InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+					if (!CustomContentFiles.Contains(InternalPath))
+					{
+						FString StagedPath = OutputDir / InternalPath;
+						PlatformFile.CreateDirectoryTree(*FPaths::GetPath(StagedPath));
+						PlatformFile.CopyFile(*StagedPath, *Entry.DiskPath);
+						CustomContentFiles.Add(InternalPath, StagedPath);
+						ResourcesStaged++;
+					}
+				}
 			}
 		}
 
-		if (CustomContentFiles.Num() > 0)
-		{
-			UE_LOG(LogTemp, Log, TEXT("SourceBridge: %d custom content files staged for BSP packing"),
-				CustomContentFiles.Num());
-		}
+		// Log collection summary
+		UE_LOG(LogTemp, Log, TEXT("SourceBridge: === Content Staging ==="));
+		UE_LOG(LogTemp, Log, TEXT("SourceBridge:   Models: %d custom (%d files), %d stock skipped"),
+			ModelsStaged, ModelFiles, ModelsStock);
+		UE_LOG(LogTemp, Log, TEXT("SourceBridge:   Sounds: %d custom, %d stock skipped"),
+			SoundsStaged, SoundsStock);
+		UE_LOG(LogTemp, Log, TEXT("SourceBridge:   Resources: %d files"), ResourcesStaged);
+		// Material count logged in Step 4b below
 	}
 
 	// ---- Step 4: Export VMF ----
@@ -397,149 +544,175 @@ FFullExportResult FFullExportPipeline::RunWithProgress(
 		*Result.VMFPath, Result.ExportSeconds);
 
 	// ---- Step 4b: Export custom material files (VTF + VMT) ----
+	// Also handles force-pack materials not in the VMF UsedMaterialPaths set
 	{
 		USourceMaterialManifest* Manifest = USourceMaterialManifest::Get();
-		if (Manifest && UsedMaterialPaths.Num() > 0)
+		if (Manifest)
 		{
-			ReportProgress(TEXT("Exporting custom materials..."), 0.5f);
-			FString MaterialsDir = OutputDir / TEXT("materials");
-			int32 MaterialExportCount = 0;
-
-			for (const FString& UsedPath : UsedMaterialPaths)
+			// Add force-packed materials to the used set
+			for (const FSourceMaterialEntry& Entry : Manifest->Entries)
 			{
-				FSourceMaterialEntry* Entry = Manifest->FindBySourcePath(UsedPath);
-				if (!Entry) continue;
-
-				// Only export materials that need files
-				bool bNeedsExport = false;
-				if (Entry->Type == ESourceMaterialType::Custom)
+				if (Entry.bForcePack)
 				{
-					bNeedsExport = true;
+					UsedMaterialPaths.Add(Entry.SourcePath);
 				}
-				else if (Entry->Type == ESourceMaterialType::Imported && !Entry->bIsInVPK)
+				else if (Settings.bPackAllManifestAssets && !Entry.bIsInVPK &&
+					Entry.Type != ESourceMaterialType::Stock)
 				{
-					bNeedsExport = true;
+					UsedMaterialPaths.Add(Entry.SourcePath);
 				}
-
-				if (!bNeedsExport) continue;
-
-				// Create output directory for this material
-				FString MatDir = MaterialsDir / FPaths::GetPath(Entry->SourcePath);
-				PlatformFile.CreateDirectoryTree(*MatDir);
-				FString BaseName = FPaths::GetBaseFilename(Entry->SourcePath);
-
-				// Export base texture -> TGA -> VTF
-				UTexture2D* BaseTexture = Cast<UTexture2D>(Entry->TextureAsset.TryLoad());
-				FString VTFPath;
-				if (BaseTexture)
-				{
-					FString TGAPath = MatDir / BaseName + TEXT(".tga");
-					if (FTextureExporter::ExportTextureToTGA(BaseTexture, TGAPath))
-					{
-						// Determine VTF format based on transparency
-						FVTFConvertOptions VTFOptions;
-						if (Entry->VMTParams.Contains(TEXT("$alphatest")) ||
-							Entry->VMTParams.Contains(TEXT("$translucent")))
-						{
-							VTFOptions.Format = TEXT("DXT5");
-						}
-						else
-						{
-							VTFOptions.Format = TEXT("DXT1");
-						}
-						VTFOptions.bGenerateMipmaps = true;
-
-						VTFPath = FTextureExporter::ConvertTGAToVTF(TGAPath, MatDir, VTFOptions);
-						if (!VTFPath.IsEmpty())
-						{
-							FString InternalPath = FString(TEXT("materials/")) + Entry->SourcePath + TEXT(".vtf");
-							InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
-							CustomContentFiles.Add(InternalPath, VTFPath);
-						}
-
-						// Clean up TGA (VTF is what we need for the game)
-						PlatformFile.DeleteFile(*TGAPath);
-					}
-				}
-
-				// Export normal map -> TGA -> VTF (if present)
-				UTexture2D* NormalMap = Cast<UTexture2D>(Entry->NormalMapAsset.TryLoad());
-				FString NormalVTFPath;
-				FString NormalSourcePath;
-				if (NormalMap)
-				{
-					NormalSourcePath = Entry->SourcePath + TEXT("_normal");
-					FString NormalTGAPath = MatDir / BaseName + TEXT("_normal.tga");
-					if (FTextureExporter::ExportTextureToTGA(NormalMap, NormalTGAPath))
-					{
-						FVTFConvertOptions NormalOptions;
-						NormalOptions.Format = TEXT("DXT5");
-						NormalOptions.bGenerateMipmaps = true;
-						NormalOptions.bNormalMap = true;
-
-						NormalVTFPath = FTextureExporter::ConvertTGAToVTF(NormalTGAPath, MatDir, NormalOptions);
-						if (!NormalVTFPath.IsEmpty())
-						{
-							FString InternalPath = FString(TEXT("materials/")) + NormalSourcePath + TEXT(".vtf");
-							InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
-							CustomContentFiles.Add(InternalPath, NormalVTFPath);
-						}
-
-						PlatformFile.DeleteFile(*NormalTGAPath);
-					}
-				}
-
-				// Generate VMT
-				FString VMTContent;
-				if (Entry->Type == ESourceMaterialType::Imported && Entry->VMTParams.Num() > 0)
-				{
-					// Lossless re-export: use stored VMT params from import
-					VMTContent = FVMTWriter::GenerateFromStoredParams(Entry->VMTShader, Entry->VMTParams);
-				}
-				else
-				{
-					// Generate VMT for custom materials
-					FVMTWriter Writer;
-					Writer.SetShader(TEXT("LightmappedGeneric"));
-					Writer.SetBaseTexture(Entry->SourcePath);
-
-					if (!NormalSourcePath.IsEmpty())
-					{
-						Writer.SetBumpMap(NormalSourcePath);
-					}
-
-					// Apply stored VMT params (transparency, two-sided, etc.)
-					for (const auto& Param : Entry->VMTParams)
-					{
-						Writer.SetParameter(Param.Key, Param.Value);
-					}
-
-					// Auto-detect surface property if not already set
-					if (!Entry->VMTParams.Contains(TEXT("$surfaceprop")))
-					{
-						Writer.SetSurfaceProp(TEXT("default"));
-					}
-
-					VMTContent = Writer.Serialize();
-				}
-
-				FString VMTPath = MatDir / BaseName + TEXT(".vmt");
-				if (FFileHelper::SaveStringToFile(VMTContent, *VMTPath))
-				{
-					FString InternalPath = FString(TEXT("materials/")) + Entry->SourcePath + TEXT(".vmt");
-					InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
-					CustomContentFiles.Add(InternalPath, VMTPath);
-				}
-
-				MaterialExportCount++;
 			}
 
-			if (MaterialExportCount > 0)
+			if (UsedMaterialPaths.Num() > 0)
 			{
-				UE_LOG(LogTemp, Log, TEXT("SourceBridge: Exported %d custom material(s) to %s"),
-					MaterialExportCount, *MaterialsDir);
+				ReportProgress(TEXT("Exporting custom materials..."), 0.5f);
+				FString MaterialsDir = OutputDir / TEXT("materials");
+				int32 MaterialExportCount = 0;
+				int32 MaterialStockCount = 0;
+
+				for (const FString& UsedPath : UsedMaterialPaths)
+				{
+					FSourceMaterialEntry* Entry = Manifest->FindBySourcePath(UsedPath);
+					if (!Entry) continue;
+
+					// Only export materials that need files
+					bool bNeedsExport = false;
+					if (Entry->Type == ESourceMaterialType::Custom)
+					{
+						bNeedsExport = true;
+					}
+					else if (Entry->Type == ESourceMaterialType::Imported && !Entry->bIsInVPK)
+					{
+						bNeedsExport = true;
+					}
+
+					if (!bNeedsExport) { MaterialStockCount++; continue; }
+
+					// Create output directory for this material
+					FString MatDir = MaterialsDir / FPaths::GetPath(Entry->SourcePath);
+					PlatformFile.CreateDirectoryTree(*MatDir);
+					FString BaseName = FPaths::GetBaseFilename(Entry->SourcePath);
+
+					// Export base texture -> TGA -> VTF
+					UTexture2D* BaseTexture = Cast<UTexture2D>(Entry->TextureAsset.TryLoad());
+					FString VTFPath;
+					if (BaseTexture)
+					{
+						FString TGAPath = MatDir / BaseName + TEXT(".tga");
+						if (FTextureExporter::ExportTextureToTGA(BaseTexture, TGAPath))
+						{
+							// Determine VTF format based on transparency
+							FVTFConvertOptions VTFOptions;
+							if (Entry->VMTParams.Contains(TEXT("$alphatest")) ||
+								Entry->VMTParams.Contains(TEXT("$translucent")))
+							{
+								VTFOptions.Format = TEXT("DXT5");
+							}
+							else
+							{
+								VTFOptions.Format = TEXT("DXT1");
+							}
+							VTFOptions.bGenerateMipmaps = true;
+
+							VTFPath = FTextureExporter::ConvertTGAToVTF(TGAPath, MatDir, VTFOptions);
+							if (!VTFPath.IsEmpty())
+							{
+								FString InternalPath = FString(TEXT("materials/")) + Entry->SourcePath + TEXT(".vtf");
+								InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+								CustomContentFiles.Add(InternalPath, VTFPath);
+							}
+
+							// Clean up TGA (VTF is what we need for the game)
+							PlatformFile.DeleteFile(*TGAPath);
+						}
+					}
+
+					// Export normal map -> TGA -> VTF (if present)
+					UTexture2D* NormalMap = Cast<UTexture2D>(Entry->NormalMapAsset.TryLoad());
+					FString NormalVTFPath;
+					FString NormalSourcePath;
+					if (NormalMap)
+					{
+						NormalSourcePath = Entry->SourcePath + TEXT("_normal");
+						FString NormalTGAPath = MatDir / BaseName + TEXT("_normal.tga");
+						if (FTextureExporter::ExportTextureToTGA(NormalMap, NormalTGAPath))
+						{
+							FVTFConvertOptions NormalOptions;
+							NormalOptions.Format = TEXT("DXT5");
+							NormalOptions.bGenerateMipmaps = true;
+							NormalOptions.bNormalMap = true;
+
+							NormalVTFPath = FTextureExporter::ConvertTGAToVTF(NormalTGAPath, MatDir, NormalOptions);
+							if (!NormalVTFPath.IsEmpty())
+							{
+								FString InternalPath = FString(TEXT("materials/")) + NormalSourcePath + TEXT(".vtf");
+								InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+								CustomContentFiles.Add(InternalPath, NormalVTFPath);
+							}
+
+							PlatformFile.DeleteFile(*NormalTGAPath);
+						}
+					}
+
+					// Generate VMT
+					FString VMTContent;
+					if (Entry->Type == ESourceMaterialType::Imported && Entry->VMTParams.Num() > 0)
+					{
+						// Lossless re-export: use stored VMT params from import
+						VMTContent = FVMTWriter::GenerateFromStoredParams(Entry->VMTShader, Entry->VMTParams);
+					}
+					else
+					{
+						// Generate VMT for custom materials
+						FVMTWriter Writer;
+						Writer.SetShader(TEXT("LightmappedGeneric"));
+						Writer.SetBaseTexture(Entry->SourcePath);
+
+						if (!NormalSourcePath.IsEmpty())
+						{
+							Writer.SetBumpMap(NormalSourcePath);
+						}
+
+						// Apply stored VMT params (transparency, two-sided, etc.)
+						for (const auto& Param : Entry->VMTParams)
+						{
+							Writer.SetParameter(Param.Key, Param.Value);
+						}
+
+						// Auto-detect surface property if not already set
+						if (!Entry->VMTParams.Contains(TEXT("$surfaceprop")))
+						{
+							Writer.SetSurfaceProp(TEXT("default"));
+						}
+
+						VMTContent = Writer.Serialize();
+					}
+
+					FString VMTPath = MatDir / BaseName + TEXT(".vmt");
+					if (FFileHelper::SaveStringToFile(VMTContent, *VMTPath))
+					{
+						FString InternalPath = FString(TEXT("materials/")) + Entry->SourcePath + TEXT(".vmt");
+						InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+						CustomContentFiles.Add(InternalPath, VMTPath);
+					}
+
+					MaterialExportCount++;
+				}
+
+				UE_LOG(LogTemp, Log, TEXT("SourceBridge:   Materials: %d custom exported (VTF+VMT), %d stock skipped"),
+					MaterialExportCount, MaterialStockCount);
 			}
 		}
+	}
+
+	// ---- Export Summary ----
+	UE_LOG(LogTemp, Log, TEXT("SourceBridge: === Export Summary ==="));
+	UE_LOG(LogTemp, Log, TEXT("SourceBridge:   Output: %s"), *OutputDir);
+	UE_LOG(LogTemp, Log, TEXT("SourceBridge:   VMF: %s"), *FPaths::GetCleanFilename(Result.VMFPath));
+	UE_LOG(LogTemp, Log, TEXT("SourceBridge:   Total content files: %d"), CustomContentFiles.Num());
+	if (Result.Warnings.Num() > 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("SourceBridge:   Warnings: %d"), Result.Warnings.Num());
 	}
 
 	// ---- Step 5: Compile map (dependency: after materials and models) ----
@@ -594,12 +767,15 @@ FFullExportResult FFullExportPipeline::RunWithProgress(
 		if (CustomContentFiles.Num() > 0 && FPaths::FileExists(Result.BSPPath))
 		{
 			ReportProgress(TEXT("Packing custom content into BSP..."), 0.8f);
+			UE_LOG(LogTemp, Log, TEXT("SourceBridge: Packing %d content files into BSP via bspzip..."),
+				CustomContentFiles.Num());
+
 			FCompileResult PackResult = FCompilePipeline::PackCustomContent(
 				Result.BSPPath, ToolsDir, CustomContentFiles);
 
 			if (PackResult.bSuccess)
 			{
-				UE_LOG(LogTemp, Log, TEXT("SourceBridge: Packed %d custom files into BSP"),
+				UE_LOG(LogTemp, Log, TEXT("SourceBridge: Successfully packed %d files into BSP"),
 					CustomContentFiles.Num());
 			}
 			else
@@ -617,16 +793,8 @@ FFullExportResult FFullExportPipeline::RunWithProgress(
 		ReportProgress(TEXT("Packaging distributable..."), 0.9f);
 		FString PackageDir = OutputDir / TEXT("package") / Settings.GameName;
 		FString PackageMaps = PackageDir / TEXT("maps");
-		FString PackageMaterials = PackageDir / TEXT("materials");
-		FString PackageModels = PackageDir / TEXT("models");
-		FString PackageSounds = PackageDir / TEXT("sound");
-		FString PackageResources = PackageDir / TEXT("resource");
 
 		PlatformFile.CreateDirectoryTree(*PackageMaps);
-		PlatformFile.CreateDirectoryTree(*PackageMaterials);
-		PlatformFile.CreateDirectoryTree(*PackageModels);
-		PlatformFile.CreateDirectoryTree(*PackageSounds);
-		PlatformFile.CreateDirectoryTree(*PackageResources);
 
 		// Copy BSP to package
 		if (!Result.BSPPath.IsEmpty() && PlatformFile.FileExists(*Result.BSPPath))
@@ -642,61 +810,28 @@ FFullExportResult FFullExportPipeline::RunWithProgress(
 			PlatformFile.CopyFile(*DestVMF, *Result.VMFPath);
 		}
 
-		// Copy materials from output to package
-		FString MatSourceDir = OutputDir / TEXT("materials");
-		if (PlatformFile.DirectoryExists(*MatSourceDir))
-		{
-			TArray<FString> MatFiles;
-			PlatformFile.FindFilesRecursively(MatFiles, *MatSourceDir, TEXT(""));
-			for (const FString& MatFile : MatFiles)
-			{
-				FString RelPath = MatFile;
-				FPaths::MakePathRelativeTo(RelPath, *(MatSourceDir + TEXT("/")));
-				FString DestPath = PackageMaterials / RelPath;
-				PlatformFile.CreateDirectoryTree(*FPaths::GetPath(DestPath));
-				PlatformFile.CopyFile(*DestPath, *MatFile);
-			}
-		}
+		// Copy all content subdirectories from output to package
+		static const TArray<FString> ContentDirs = {
+			TEXT("materials"), TEXT("models"), TEXT("sound"), TEXT("resource")
+		};
 
-		// Copy models from output to package
-		FString ModelSourceDir = OutputDir / TEXT("models");
-		if (PlatformFile.DirectoryExists(*ModelSourceDir))
+		for (const FString& DirName : ContentDirs)
 		{
-			TArray<FString> ModelFiles;
-			PlatformFile.FindFilesRecursively(ModelFiles, *ModelSourceDir, TEXT(""));
-			for (const FString& ModelFile : ModelFiles)
+			FString SrcDir = OutputDir / DirName;
+			FString DstDir = PackageDir / DirName;
+			if (PlatformFile.DirectoryExists(*SrcDir))
 			{
-				// Only copy compiled model files (.mdl, .vtx, .vvd, .phy)
-				FString Ext = FPaths::GetExtension(ModelFile).ToLower();
-				if (Ext == TEXT("mdl") || Ext == TEXT("vtx") || Ext == TEXT("vvd") || Ext == TEXT("phy"))
+				PlatformFile.CreateDirectoryTree(*DstDir);
+				TArray<FString> Files;
+				PlatformFile.FindFilesRecursively(Files, *SrcDir, TEXT(""));
+				for (const FString& SrcFile : Files)
 				{
-					FString RelPath = ModelFile;
-					FPaths::MakePathRelativeTo(RelPath, *(ModelSourceDir + TEXT("/")));
-					FString DestPath = PackageModels / RelPath;
-					PlatformFile.CreateDirectoryTree(*FPaths::GetPath(DestPath));
-					PlatformFile.CopyFile(*DestPath, *ModelFile);
+					FString RelPath = SrcFile;
+					FPaths::MakePathRelativeTo(RelPath, *(SrcDir + TEXT("/")));
+					FString DstFile = DstDir / RelPath;
+					PlatformFile.CreateDirectoryTree(*FPaths::GetPath(DstFile));
+					PlatformFile.CopyFile(*DstFile, *SrcFile);
 				}
-			}
-		}
-
-		// Copy sounds to package (from custom content staging)
-		for (const auto& ContentPair : CustomContentFiles)
-		{
-			if (ContentPair.Key.StartsWith(TEXT("sound/")))
-			{
-				FString RelPath = ContentPair.Key;
-				RelPath.RemoveFromStart(TEXT("sound/"));
-				FString DestPath = PackageSounds / RelPath;
-				PlatformFile.CreateDirectoryTree(*FPaths::GetPath(DestPath));
-				PlatformFile.CopyFile(*DestPath, *ContentPair.Value);
-			}
-			else if (ContentPair.Key.StartsWith(TEXT("resource/")))
-			{
-				FString RelPath = ContentPair.Key;
-				RelPath.RemoveFromStart(TEXT("resource/"));
-				FString DestPath = PackageResources / RelPath;
-				PlatformFile.CreateDirectoryTree(*FPaths::GetPath(DestPath));
-				PlatformFile.CopyFile(*DestPath, *ContentPair.Value);
 			}
 		}
 
