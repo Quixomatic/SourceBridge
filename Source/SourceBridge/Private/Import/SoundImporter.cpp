@@ -5,64 +5,10 @@
 #include "Misc/Paths.h"
 #include "Misc/PackageName.h"
 #include "UObject/Package.h"
-#include "UObject/SavePackage.h"
 #include "AssetRegistry/AssetRegistryModule.h"
-#include "HAL/PlatformFileManager.h"
-
-// Simple WAV header parsing
-struct FWAVHeader
-{
-	int32 SampleRate = 0;
-	int16 NumChannels = 0;
-	int16 BitsPerSample = 0;
-	int32 DataSize = 0;
-	int32 DataOffset = 0;
-	bool bValid = false;
-};
-
-static FWAVHeader ParseWAVHeader(const TArray<uint8>& Data)
-{
-	FWAVHeader Header;
-
-	if (Data.Num() < 44) return Header;
-
-	// Check RIFF header
-	if (Data[0] != 'R' || Data[1] != 'I' || Data[2] != 'F' || Data[3] != 'F')
-		return Header;
-
-	// Check WAVE format
-	if (Data[8] != 'W' || Data[9] != 'A' || Data[10] != 'V' || Data[11] != 'E')
-		return Header;
-
-	// Parse chunks
-	int32 Offset = 12;
-	while (Offset + 8 <= Data.Num())
-	{
-		FString ChunkID = FString::Printf(TEXT("%c%c%c%c"),
-			(char)Data[Offset], (char)Data[Offset + 1],
-			(char)Data[Offset + 2], (char)Data[Offset + 3]);
-		int32 ChunkSize = *(const int32*)&Data[Offset + 4];
-
-		if (ChunkID == TEXT("fmt ") && ChunkSize >= 16)
-		{
-			Header.NumChannels = *(const int16*)&Data[Offset + 10];
-			Header.SampleRate = *(const int32*)&Data[Offset + 12];
-			Header.BitsPerSample = *(const int16*)&Data[Offset + 22];
-		}
-		else if (ChunkID == TEXT("data"))
-		{
-			Header.DataSize = ChunkSize;
-			Header.DataOffset = Offset + 8;
-			Header.bValid = true;
-		}
-
-		Offset += 8 + ChunkSize;
-		// Align to word boundary
-		if (ChunkSize % 2 != 0) Offset++;
-	}
-
-	return Header;
-}
+#include "AssetToolsModule.h"
+#include "IAssetTools.h"
+#include "AssetImportTask.h"
 
 USoundWave* FSoundImporter::ImportSound(const FString& SourcePath, const FString& DiskPath)
 {
@@ -82,38 +28,37 @@ USoundWave* FSoundImporter::ImportSound(const FString& SourcePath, const FString
 		}
 	}
 
-	// Load the WAV file
-	TArray<uint8> WAVData;
-	if (!FFileHelper::LoadFileToArray(WAVData, *DiskPath))
+	// Validate the WAV file exists and is reasonable size
+	if (!FPaths::FileExists(DiskPath))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("SoundImporter: Failed to load WAV: %s"), *DiskPath);
+		UE_LOG(LogTemp, Warning, TEXT("SoundImporter: WAV file not found: %s"), *DiskPath);
 		return nullptr;
 	}
 
-	// Parse WAV header for metadata
-	FWAVHeader Header = ParseWAVHeader(WAVData);
-	if (!Header.bValid)
+	int64 FileSize = IFileManager::Get().FileSize(*DiskPath);
+	if (FileSize <= 44 || FileSize > 256 * 1024 * 1024)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("SoundImporter: Invalid WAV format: %s"), *DiskPath);
+		UE_LOG(LogTemp, Warning, TEXT("SoundImporter: Skipping WAV with bad size (%lld bytes): %s"),
+			FileSize, *DiskPath);
 		return nullptr;
 	}
 
-	// Build asset path: /Game/SourceBridge/Sounds/<relative_path_without_extension>
+	// Build asset destination path: /Game/SourceBridge/Sounds/<relative_path_without_extension>
 	FString CleanPath = SourcePath.ToLower();
 	CleanPath.ReplaceInline(TEXT("\\"), TEXT("/"));
 	CleanPath.RemoveFromStart(TEXT("sound/"));
 	CleanPath = FPaths::GetPath(CleanPath) / FPaths::GetBaseFilename(CleanPath);
 	CleanPath = CleanPath.Replace(TEXT(" "), TEXT("_"));
 
-	FString AssetPath = FString::Printf(TEXT("/Game/SourceBridge/Sounds/%s"), *CleanPath);
-	FString AssetName = FPaths::GetCleanFilename(AssetPath);
+	FString DestinationPath = FString::Printf(TEXT("/Game/SourceBridge/Sounds/%s"), *FPaths::GetPath(CleanPath));
+	FString AssetName = FPaths::GetCleanFilename(CleanPath);
 
-	// Check if asset already exists on disk
-	FString FullObjectPath = AssetPath + TEXT(".") + AssetName;
+	// Check if asset already exists
+	FString FullAssetPath = DestinationPath / AssetName;
+	FString FullObjectPath = FullAssetPath + TEXT(".") + AssetName;
 	USoundWave* ExistingAsset = LoadObject<USoundWave>(nullptr, *FullObjectPath);
 	if (ExistingAsset)
 	{
-		// Register in manifest even if already exists (might be re-import)
 		if (Manifest)
 		{
 			FSourceSoundEntry Entry;
@@ -122,70 +67,48 @@ USoundWave* FSoundImporter::ImportSound(const FString& SourcePath, const FString
 			Entry.SoundAsset = FSoftObjectPath(ExistingAsset);
 			Entry.DiskPath = DiskPath;
 			Entry.Duration = ExistingAsset->Duration;
-			Entry.SampleRate = Header.SampleRate;
-			Entry.NumChannels = Header.NumChannels;
+			Entry.SampleRate = ExistingAsset->GetSampleRateForCurrentPlatform();
+			Entry.NumChannels = ExistingAsset->NumChannels;
 			Entry.LastImported = FDateTime::Now();
 			Manifest->Register(Entry);
 		}
 		return ExistingAsset;
 	}
 
-	// Create package
-	UPackage* Package = CreatePackage(*AssetPath);
-	if (!Package)
-	{
-		UE_LOG(LogTemp, Error, TEXT("SoundImporter: Failed to create package: %s"), *AssetPath);
-		return nullptr;
-	}
-	Package->FullyLoad();
+	// Use UE's built-in asset import pipeline (UAssetImportTask) instead of manual
+	// USoundWave creation. Manual RawData.UpdatePayload causes heap corruption.
+	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
 
-	// Create the USoundWave
-	USoundWave* SoundWave = NewObject<USoundWave>(Package, *AssetName, RF_Public | RF_Standalone);
+	UAssetImportTask* ImportTask = NewObject<UAssetImportTask>();
+	ImportTask->Filename = DiskPath;
+	ImportTask->DestinationPath = DestinationPath;
+	ImportTask->DestinationName = AssetName;
+	ImportTask->bAutomated = true;
+	ImportTask->bReplaceExisting = true;
+	ImportTask->bSave = true;
+
+	TArray<UAssetImportTask*> ImportTasks;
+	ImportTasks.Add(ImportTask);
+	AssetTools.ImportAssetTasks(ImportTasks);
+
+	USoundWave* SoundWave = nullptr;
+	for (UObject* Asset : ImportTask->GetObjects())
+	{
+		SoundWave = Cast<USoundWave>(Asset);
+		if (SoundWave)
+		{
+			break;
+		}
+	}
+
 	if (!SoundWave)
 	{
-		UE_LOG(LogTemp, Error, TEXT("SoundImporter: Failed to create USoundWave for '%s'"), *SourcePath);
+		UE_LOG(LogTemp, Warning, TEXT("SoundImporter: UE import pipeline failed for '%s'"), *DiskPath);
 		return nullptr;
 	}
 
-	// Set properties from WAV header (match SoundFactory.cpp pattern)
-	SoundWave->SetSampleRate(Header.SampleRate);
-	SoundWave->NumChannels = Header.NumChannels;
-
-	int32 NumFrames = 0;
-	if (Header.DataSize > 0 && Header.SampleRate > 0 && Header.NumChannels > 0 && Header.BitsPerSample > 0)
-	{
-		int32 BytesPerSample = Header.BitsPerSample / 8;
-		NumFrames = Header.DataSize / (BytesPerSample * Header.NumChannels);
-		SoundWave->Duration = (float)NumFrames / (float)Header.SampleRate;
-	}
-
-#if WITH_EDITORONLY_DATA
-	SoundWave->SetImportedSampleRate(Header.SampleRate);
-#endif
-	SoundWave->TotalSamples = Header.SampleRate * SoundWave->Duration;
-
-	// Store the raw WAV data as bulk data so UE can decode it
-	SoundWave->RawData.UpdatePayload(FSharedBuffer::Clone(WAVData.GetData(), WAVData.Num()));
-
-	// Save the asset
-	Package->MarkPackageDirty();
-	FAssetRegistryModule::AssetCreated(SoundWave);
-
-	FString PackageFileName;
-	if (FPackageName::TryConvertLongPackageNameToFilename(
-		Package->GetName(), PackageFileName, FPackageName::GetAssetPackageExtension()))
-	{
-		FString Dir = FPaths::GetPath(PackageFileName);
-		IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
-		PlatformFile.CreateDirectoryTree(*Dir);
-
-		FSavePackageArgs SaveArgs;
-		SaveArgs.TopLevelFlags = RF_Public | RF_Standalone;
-		UPackage::SavePackage(Package, SoundWave, *PackageFileName, SaveArgs);
-	}
-
-	UE_LOG(LogTemp, Log, TEXT("SoundImporter: Imported '%s' → %s (%.1fs, %dHz, %dch)"),
-		*SourcePath, *AssetPath, SoundWave->Duration, Header.SampleRate, Header.NumChannels);
+	UE_LOG(LogTemp, Log, TEXT("SoundImporter: Imported '%s' -> %s (%.1fs, %dch)"),
+		*SourcePath, *FullAssetPath, SoundWave->Duration, (int32)SoundWave->NumChannels);
 
 	// Register in manifest
 	if (Manifest)
@@ -196,8 +119,8 @@ USoundWave* FSoundImporter::ImportSound(const FString& SourcePath, const FString
 		Entry.SoundAsset = FSoftObjectPath(SoundWave);
 		Entry.DiskPath = DiskPath;
 		Entry.Duration = SoundWave->Duration;
-		Entry.SampleRate = Header.SampleRate;
-		Entry.NumChannels = Header.NumChannels;
+		Entry.SampleRate = SoundWave->GetSampleRateForCurrentPlatform();
+		Entry.NumChannels = SoundWave->NumChannels;
 		Entry.LastImported = FDateTime::Now();
 		Manifest->Register(Entry);
 	}

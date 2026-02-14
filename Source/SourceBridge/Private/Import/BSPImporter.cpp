@@ -25,7 +25,7 @@ FVMFImportResult FBSPImporter::ImportFile(const FString& BSPPath, UWorld* World,
 
 	FString MapName = FPaths::GetBaseFilename(BSPPath);
 
-	FScopedSlowTask SlowTask(5.0f, FText::FromString(FString::Printf(TEXT("Importing %s..."), *MapName)));
+	FScopedSlowTask SlowTask(5.5f, FText::FromString(FString::Printf(TEXT("Importing %s..."), *MapName)));
 	SlowTask.MakeDialog(true);
 
 	// Output to Saved/SourceBridge/Import/<mapname>/ (absolute path for external tools)
@@ -103,9 +103,16 @@ FVMFImportResult FBSPImporter::ImportFile(const FString& BSPPath, UWorld* World,
 	ImportSettings.AssetSearchPath = AssetSearchDir;
 	Result = FVMFImporter::ImportFile(VMFPath, World, ImportSettings);
 
-	// Step 4: Post-VMF resource import and manifest saves
-	// NOTE: Sound import (USoundWave creation) is disabled — it causes SavePackage crashes
-	// due to bulk data serialization issues. Will be re-enabled once fixed.
+	// Step 4: Post-VMF asset imports and manifest saves
+
+	SlowTask.EnterProgressFrame(0.5f, FText::FromString(TEXT("Importing sounds...")));
+	{
+		int32 SoundCount = FSoundImporter::ImportSoundsFromDirectory(AssetSearchDir);
+		if (SoundCount > 0)
+		{
+			UE_LOG(LogTemp, Log, TEXT("BSPImporter: Imported %d sounds"), SoundCount);
+		}
+	}
 
 	SlowTask.EnterProgressFrame(0.5f, FText::FromString(TEXT("Importing resources...")));
 	{

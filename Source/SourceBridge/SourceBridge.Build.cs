@@ -35,7 +35,8 @@ public class SourceBridge : ModuleRules
 			"BSPUtils",
 			"ProceduralMeshComponent",
 			"ImageWrapper",
-			"GraphEditor"
+			"GraphEditor",
+			"AssetTools"
 		});
 	}
 }
