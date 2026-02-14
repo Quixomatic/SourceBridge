@@ -262,46 +262,28 @@ void FSourceBridgeToolbar::OnExportScene()
 	}
 
 	USourceBridgeSettings* Settings = USourceBridgeSettings::Get();
-	FString OutputDir = Settings->OutputDirectory.Path;
-	if (OutputDir.IsEmpty())
+
+	FFullExportSettings ExportSettings;
+	ExportSettings.bCompile = false;
+	ExportSettings.bValidate = false;
+	ExportSettings.GameName = Settings->TargetGame;
+	ExportSettings.MapName = Settings->MapName;
+	ExportSettings.OutputDir = Settings->OutputDirectory.Path;
+
+	FFullExportResult Result = FFullExportPipeline::Run(World, ExportSettings);
+
+	if (Result.bSuccess)
 	{
-		OutputDir = FPaths::ProjectSavedDir() / TEXT("SourceBridge");
-	}
-
-	FString MapName = Settings->MapName;
-	if (MapName.IsEmpty())
-	{
-		MapName = World->GetMapName();
-		MapName = MapName.Replace(TEXT("UEDPIE_0_"), TEXT(""));
-		MapName = MapName.Replace(TEXT("UEDPIE_"), TEXT(""));
-		if (MapName.IsEmpty()) MapName = TEXT("export");
-	}
-
-	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
-	PlatformFile.CreateDirectoryTree(*OutputDir);
-
-	FString OutputPath = OutputDir / MapName + TEXT(".vmf");
-	FString VMFContent = FVMFExporter::ExportScene(World);
-
-	if (VMFContent.IsEmpty())
-	{
+		FString OutputDir = FPaths::GetPath(Result.VMFPath);
 		FMessageDialog::Open(EAppMsgType::Ok,
-			LOCTEXT("EmptyExport", "Export produced empty VMF. Add brushes to the scene."));
-		return;
-	}
-
-	if (FFileHelper::SaveStringToFile(VMFContent, *OutputPath))
-	{
-		UE_LOG(LogTemp, Log, TEXT("SourceBridge: Scene exported to: %s"), *OutputPath);
-		FMessageDialog::Open(EAppMsgType::Ok,
-			FText::Format(LOCTEXT("ExportSuccess", "VMF exported to:\n{0}"),
-				FText::FromString(OutputPath)));
+			FText::Format(LOCTEXT("ExportSuccess", "Scene exported to:\n{0}\n\nVMF + content folders (materials, models, sound, resource)"),
+				FText::FromString(OutputDir)));
 	}
 	else
 	{
 		FMessageDialog::Open(EAppMsgType::Ok,
-			FText::Format(LOCTEXT("ExportFail", "Failed to write VMF to:\n{0}"),
-				FText::FromString(OutputPath)));
+			FText::Format(LOCTEXT("ExportFail", "Export failed:\n{0}"),
+				FText::FromString(Result.ErrorMessage)));
 	}
 }
 
