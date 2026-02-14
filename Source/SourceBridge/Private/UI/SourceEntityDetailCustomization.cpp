@@ -2,14 +2,24 @@
 #include "Actors/SourceEntityActor.h"
 #include "SourceBridgeModule.h"
 #include "Entities/FGDParser.h"
+#include "Models/SourceModelManifest.h"
+#include "Import/SourceSoundManifest.h"
+#include "Materials/SourceMaterialManifest.h"
+#include "Sound/SoundWave.h"
+#include "Editor.h"
 #include "DetailLayoutBuilder.h"
 #include "DetailCategoryBuilder.h"
 #include "DetailWidgetRow.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SComboBox.h"
+#include "Widgets/Input/SComboButton.h"
 #include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Input/SNumericEntryBox.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SScrollBox.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Modules/ModuleManager.h"
 
 #define LOCTEXT_NAMESPACE "SourceEntityDetail"
@@ -461,38 +471,266 @@ void FSourceEntityDetailCustomization::BuildFGDPropertyWidgets(
 		}
 		else
 		{
-			// --- String/Studio/Sprite/Sound/TargetSource/TargetDestination/etc: text box ---
-			FGDCategory.AddCustomRow(FText::FromString(DisplayName))
-				.NameContent()
-				[
-					SNew(STextBlock)
-					.Text(FText::FromString(DisplayName))
-					.Font(IDetailLayoutBuilder::GetDetailFont())
-					.ToolTipText(FText::FromString(Tooltip))
-				]
-				.ValueContent()
-				.MinDesiredWidth(200.0f)
-				[
-					SNew(SEditableTextBox)
-					.Font(IDetailLayoutBuilder::GetDetailFont())
-					.IsReadOnly(Prop.bReadOnly)
-					.Text_Lambda([WeakActor, KeyName, Prop]() -> FText
+			// Detect if this property references a Source asset (model, sound, material)
+			enum class ESmartAsset : uint8 { None, Model, Sound, Material };
+			ESmartAsset SmartType = ESmartAsset::None;
+
+			// Direct FGD type detection
+			if (Prop.Type == EFGDPropertyType::Studio || Prop.Type == EFGDPropertyType::Sprite)
+				SmartType = ESmartAsset::Model;
+			else if (Prop.Type == EFGDPropertyType::Sound)
+				SmartType = ESmartAsset::Sound;
+			else if (Prop.Type == EFGDPropertyType::Material || Prop.Type == EFGDPropertyType::Decal)
+				SmartType = ESmartAsset::Material;
+
+			// Name-based fallback for string-typed properties that are actually asset refs
+			if (SmartType == ESmartAsset::None && Actor)
+			{
+				FString LowerName = Prop.Name.ToLower();
+				FString ClassName = Actor->SourceClassname.ToLower();
+
+				if (LowerName == TEXT("message") && ClassName == TEXT("ambient_generic"))
+					SmartType = ESmartAsset::Sound;
+				else if (LowerName == TEXT("startsound") || LowerName == TEXT("stopsound") || LowerName == TEXT("movesound"))
+					SmartType = ESmartAsset::Sound;
+				else if (LowerName.StartsWith(TEXT("scape")) && LowerName.Len() <= 6)
+					SmartType = ESmartAsset::Sound;
+			}
+
+			// Build the text box (always present as source of truth)
+			TSharedRef<SEditableTextBox> TextBox =
+				SNew(SEditableTextBox)
+				.Font(IDetailLayoutBuilder::GetDetailFont())
+				.IsReadOnly(Prop.bReadOnly)
+				.Text_Lambda([WeakActor, KeyName, Prop]() -> FText
+				{
+					if (ASourceEntityActor* A = WeakActor.Get())
 					{
-						if (ASourceEntityActor* A = WeakActor.Get())
+						const FString* Val = A->KeyValues.Find(KeyName);
+						if (Val) return FText::FromString(*Val);
+					}
+					return FText::FromString(Prop.DefaultValue);
+				})
+				.OnTextCommitted_Lambda([WeakActor, KeyName](const FText& NewText, ETextCommit::Type)
+				{
+					if (ASourceEntityActor* A = WeakActor.Get())
+					{
+						SetKeyValue(A, KeyName, NewText.ToString());
+					}
+				});
+
+			if (SmartType == ESmartAsset::None)
+			{
+				// --- Plain text box (no asset reference detected) ---
+				FGDCategory.AddCustomRow(FText::FromString(DisplayName))
+					.NameContent()
+					[
+						SNew(STextBlock)
+						.Text(FText::FromString(DisplayName))
+						.Font(IDetailLayoutBuilder::GetDetailFont())
+						.ToolTipText(FText::FromString(Tooltip))
+					]
+					.ValueContent()
+					.MinDesiredWidth(200.0f)
+					[
+						TextBox
+					];
+			}
+			else
+			{
+				// --- Smart asset widget: text box + picker buttons ---
+				TSharedRef<SHorizontalBox> Row = SNew(SHorizontalBox)
+					+ SHorizontalBox::Slot()
+					.FillWidth(1.0f)
+					[
+						TextBox
+					];
+
+				// Sound: add play/stop button
+				if (SmartType == ESmartAsset::Sound)
+				{
+					Row->AddSlot()
+					.AutoWidth()
+					.Padding(2.0f, 0.0f, 0.0f, 0.0f)
+					[
+						SNew(SButton)
+						.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+						.ContentPadding(FMargin(2.0f))
+						.ToolTipText(LOCTEXT("PlaySoundTip", "Play/Stop this sound"))
+						.OnClicked_Lambda([WeakActor, KeyName]() -> FReply
 						{
+							if (!GEditor) return FReply::Handled();
+
+							ASourceEntityActor* A = WeakActor.Get();
+							if (!A) return FReply::Handled();
+
 							const FString* Val = A->KeyValues.Find(KeyName);
-							if (Val) return FText::FromString(*Val);
-						}
-						return FText::FromString(Prop.DefaultValue);
-					})
-					.OnTextCommitted_Lambda([WeakActor, KeyName](const FText& NewText, ETextCommit::Type)
+							if (!Val || Val->IsEmpty())
+							{
+								GEditor->ResetPreviewAudioComponent();
+								return FReply::Handled();
+							}
+
+							// Look up sound in manifest
+							USourceSoundManifest* SndManifest = USourceSoundManifest::Get();
+							if (!SndManifest) return FReply::Handled();
+
+							// Try with and without "sound/" prefix
+							FString SearchPath = *Val;
+							FSourceSoundEntry* Entry = SndManifest->FindBySourcePath(SearchPath);
+							if (!Entry && !SearchPath.StartsWith(TEXT("sound/")))
+							{
+								Entry = SndManifest->FindBySourcePath(TEXT("sound/") + SearchPath);
+							}
+							if (!Entry)
+							{
+								// Try stripping sound/ prefix
+								FString Stripped = SearchPath;
+								if (Stripped.RemoveFromStart(TEXT("sound/")))
+									Entry = SndManifest->FindBySourcePath(Stripped);
+							}
+
+							if (Entry)
+							{
+								USoundWave* Sound = Cast<USoundWave>(Entry->SoundAsset.TryLoad());
+								if (Sound)
+								{
+									GEditor->PlayPreviewSound(Sound);
+									return FReply::Handled();
+								}
+							}
+
+							GEditor->ResetPreviewAudioComponent();
+							return FReply::Handled();
+						})
+						[
+							SNew(STextBlock)
+							.Font(IDetailLayoutBuilder::GetDetailFont())
+							.Text(FText::FromString(TEXT("\u25B6")))
+						]
+					];
+				}
+
+				// Browse/pick button: opens a menu listing manifest entries
+				Row->AddSlot()
+				.AutoWidth()
+				.Padding(2.0f, 0.0f, 0.0f, 0.0f)
+				[
+					SNew(SComboButton)
+					.HasDownArrow(true)
+					.ContentPadding(FMargin(2.0f, 0.0f))
+					.ButtonStyle(FAppStyle::Get(), "SimpleButton")
+					.ToolTipText(LOCTEXT("BrowseAssetTip", "Pick from imported assets"))
+					.OnGetMenuContent_Lambda([WeakActor, KeyName, SmartType]() -> TSharedRef<SWidget>
 					{
-						if (ASourceEntityActor* A = WeakActor.Get())
+						FMenuBuilder MenuBuilder(/*bInShouldCloseWindowAfterMenuSelection=*/true, nullptr);
+
+						if (SmartType == ESmartAsset::Model)
 						{
-							SetKeyValue(A, KeyName, NewText.ToString());
+							USourceModelManifest* Manifest = USourceModelManifest::Get();
+							if (Manifest && Manifest->Entries.Num() > 0)
+							{
+								for (const FSourceModelEntry& MEntry : Manifest->Entries)
+								{
+									FString Path = MEntry.SourcePath;
+									MenuBuilder.AddMenuEntry(
+										FText::FromString(Path),
+										FText::GetEmpty(),
+										FSlateIcon(),
+										FUIAction(FExecuteAction::CreateLambda([WeakActor, KeyName, Path]()
+										{
+											if (ASourceEntityActor* A = WeakActor.Get())
+												FSourceEntityDetailCustomization::SetKeyValue(A, KeyName, Path);
+										}))
+									);
+								}
+							}
+							else
+							{
+								MenuBuilder.AddMenuEntry(
+									LOCTEXT("NoModels", "No models in manifest"),
+									FText::GetEmpty(), FSlateIcon(), FUIAction());
+							}
 						}
+						else if (SmartType == ESmartAsset::Sound)
+						{
+							USourceSoundManifest* Manifest = USourceSoundManifest::Get();
+							if (Manifest && Manifest->Entries.Num() > 0)
+							{
+								for (const FSourceSoundEntry& SEntry : Manifest->Entries)
+								{
+									FString Path = SEntry.SourcePath;
+									MenuBuilder.AddMenuEntry(
+										FText::FromString(Path),
+										FText::GetEmpty(),
+										FSlateIcon(),
+										FUIAction(FExecuteAction::CreateLambda([WeakActor, KeyName, Path]()
+										{
+											if (ASourceEntityActor* A = WeakActor.Get())
+												FSourceEntityDetailCustomization::SetKeyValue(A, KeyName, Path);
+										}))
+									);
+								}
+							}
+							else
+							{
+								MenuBuilder.AddMenuEntry(
+									LOCTEXT("NoSounds", "No sounds in manifest"),
+									FText::GetEmpty(), FSlateIcon(), FUIAction());
+							}
+						}
+						else if (SmartType == ESmartAsset::Material)
+						{
+							USourceMaterialManifest* Manifest = USourceMaterialManifest::Get();
+							if (Manifest && Manifest->Entries.Num() > 0)
+							{
+								for (const FSourceMaterialEntry& MatEntry : Manifest->Entries)
+								{
+									FString Path = MatEntry.SourcePath;
+									MenuBuilder.AddMenuEntry(
+										FText::FromString(Path),
+										FText::GetEmpty(),
+										FSlateIcon(),
+										FUIAction(FExecuteAction::CreateLambda([WeakActor, KeyName, Path]()
+										{
+											if (ASourceEntityActor* A = WeakActor.Get())
+												FSourceEntityDetailCustomization::SetKeyValue(A, KeyName, Path);
+										}))
+									);
+								}
+							}
+							else
+							{
+								MenuBuilder.AddMenuEntry(
+									LOCTEXT("NoMaterials", "No materials in manifest"),
+									FText::GetEmpty(), FSlateIcon(), FUIAction());
+							}
+						}
+
+						return MenuBuilder.MakeWidget();
 					})
+					.ButtonContent()
+					[
+						SNew(STextBlock)
+						.Font(IDetailLayoutBuilder::GetDetailFont())
+						.Text(LOCTEXT("BrowseBtn", "..."))
+					]
 				];
+
+				FGDCategory.AddCustomRow(FText::FromString(DisplayName))
+					.NameContent()
+					[
+						SNew(STextBlock)
+						.Text(FText::FromString(DisplayName))
+						.Font(IDetailLayoutBuilder::GetDetailFont())
+						.ToolTipText(FText::FromString(Tooltip))
+					]
+					.ValueContent()
+					.MinDesiredWidth(200.0f)
+					[
+						Row
+					];
+			}
 		}
 	}
 
