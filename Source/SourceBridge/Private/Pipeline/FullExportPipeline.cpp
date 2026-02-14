@@ -281,19 +281,73 @@ FFullExportResult FFullExportPipeline::RunWithProgress(
 			}
 		}
 
-		// --- Sounds: pack custom sounds from manifest ---
+		// --- Sounds: scan entities for sound references, pack from manifest ---
 		USourceSoundManifest* SoundManifest = USourceSoundManifest::Get();
-		if (SoundManifest)
+		if (SoundManifest && SoundManifest->Entries.Num() > 0)
 		{
-			for (FSourceSoundEntry& SoundEntry : SoundManifest->Entries)
+			// Collect sound paths referenced by entities in the world
+			TSet<FString> ReferencedSoundPaths;
+
+			static const TArray<FString> SoundKeyNames = {
+				TEXT("message"),       // ambient_generic
+				TEXT("startsound"),    // doors, buttons
+				TEXT("stopsound"),
+				TEXT("movesound"),
+				TEXT("StartSound"),
+				TEXT("StopSound"),
+				TEXT("MoveSound"),
+				TEXT("ClosedSound"),
+				TEXT("LockedSound"),
+				TEXT("UnlockedSound"),
+				TEXT("SoundStart"),
+				TEXT("SoundStop"),
+			};
+
+			for (TActorIterator<ASourceEntityActor> It(World); It; ++It)
+			{
+				ASourceEntityActor* Entity = *It;
+				if (!Entity) continue;
+
+				for (const FString& SoundKey : SoundKeyNames)
+				{
+					const FString* Val = Entity->KeyValues.Find(SoundKey);
+					if (Val && !Val->IsEmpty())
+					{
+						FString NormPath = Val->ToLower();
+						NormPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+						ReferencedSoundPaths.Add(NormPath);
+						// Also add with sound/ prefix for matching
+						if (!NormPath.StartsWith(TEXT("sound/")))
+							ReferencedSoundPaths.Add(TEXT("sound/") + NormPath);
+					}
+				}
+			}
+
+			// Pack referenced non-stock sounds
+			int32 SoundPackCount = 0;
+			for (const FSourceSoundEntry& SoundEntry : SoundManifest->Entries)
 			{
 				if (SoundEntry.bIsStock) continue;
 				if (SoundEntry.DiskPath.IsEmpty()) continue;
 				if (!FPaths::FileExists(SoundEntry.DiskPath)) continue;
 
-				FString InternalPath = SoundEntry.SourcePath;
-				InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
-				CustomContentFiles.Add(InternalPath, SoundEntry.DiskPath);
+				FString NormSourcePath = SoundEntry.SourcePath.ToLower();
+				NormSourcePath.ReplaceInline(TEXT("\\"), TEXT("/"));
+
+				// Check if this sound is referenced by any entity
+				if (ReferencedSoundPaths.Contains(NormSourcePath))
+				{
+					FString InternalPath = SoundEntry.SourcePath;
+					InternalPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+					CustomContentFiles.Add(InternalPath, SoundEntry.DiskPath);
+					SoundPackCount++;
+				}
+			}
+
+			if (SoundPackCount > 0)
+			{
+				UE_LOG(LogTemp, Log, TEXT("SourceBridge: %d custom sound(s) staged for packing (%d entity references found)"),
+					SoundPackCount, ReferencedSoundPaths.Num());
 			}
 		}
 
@@ -565,10 +619,14 @@ FFullExportResult FFullExportPipeline::RunWithProgress(
 		FString PackageMaps = PackageDir / TEXT("maps");
 		FString PackageMaterials = PackageDir / TEXT("materials");
 		FString PackageModels = PackageDir / TEXT("models");
+		FString PackageSounds = PackageDir / TEXT("sound");
+		FString PackageResources = PackageDir / TEXT("resource");
 
 		PlatformFile.CreateDirectoryTree(*PackageMaps);
 		PlatformFile.CreateDirectoryTree(*PackageMaterials);
 		PlatformFile.CreateDirectoryTree(*PackageModels);
+		PlatformFile.CreateDirectoryTree(*PackageSounds);
+		PlatformFile.CreateDirectoryTree(*PackageResources);
 
 		// Copy BSP to package
 		if (!Result.BSPPath.IsEmpty() && PlatformFile.FileExists(*Result.BSPPath))
@@ -618,6 +676,27 @@ FFullExportResult FFullExportPipeline::RunWithProgress(
 					PlatformFile.CreateDirectoryTree(*FPaths::GetPath(DestPath));
 					PlatformFile.CopyFile(*DestPath, *ModelFile);
 				}
+			}
+		}
+
+		// Copy sounds to package (from custom content staging)
+		for (const auto& ContentPair : CustomContentFiles)
+		{
+			if (ContentPair.Key.StartsWith(TEXT("sound/")))
+			{
+				FString RelPath = ContentPair.Key;
+				RelPath.RemoveFromStart(TEXT("sound/"));
+				FString DestPath = PackageSounds / RelPath;
+				PlatformFile.CreateDirectoryTree(*FPaths::GetPath(DestPath));
+				PlatformFile.CopyFile(*DestPath, *ContentPair.Value);
+			}
+			else if (ContentPair.Key.StartsWith(TEXT("resource/")))
+			{
+				FString RelPath = ContentPair.Key;
+				RelPath.RemoveFromStart(TEXT("resource/"));
+				FString DestPath = PackageResources / RelPath;
+				PlatformFile.CreateDirectoryTree(*FPaths::GetPath(DestPath));
+				PlatformFile.CopyFile(*DestPath, *ContentPair.Value);
 			}
 		}
 
