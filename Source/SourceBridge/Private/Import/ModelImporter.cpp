@@ -772,36 +772,10 @@ UStaticMesh* FModelImporter::ResolveModel(const FString& SourceModelPath, int32 
 	UStaticMesh* Mesh = CreateStaticMesh(*ParsedData, SourceModelPath, SkinIndex);
 	ModelCache.Add(CacheKey, Mesh);
 
-	// Register in model manifest for asset management and export packing
-	if (Mesh)
-	{
-		USourceModelManifest* ModelManifest = USourceModelManifest::Get();
-		if (ModelManifest)
-		{
-			FSourceModelEntry ManifestEntry;
-			ManifestEntry.SourcePath = NormPath;
-			ManifestEntry.MeshAsset = FSoftObjectPath(Mesh);
-			ManifestEntry.bIsStock = IsStockModel(NormPath);
-			ManifestEntry.Type = ManifestEntry.bIsStock ? ESourceModelType::Stock : ESourceModelType::Imported;
-			ManifestEntry.SurfaceProp = ParsedData->SurfaceProp;
-			ManifestEntry.bIsStaticProp = ParsedData->bIsStaticProp;
-			ManifestEntry.ModelMass = ParsedData->Mass;
-			ManifestEntry.CDMaterials = ParsedData->MaterialSearchDirs;
-			ManifestEntry.LastImported = FDateTime::Now();
-
-			// Collect disk paths for non-stock models (used by export packing)
-			if (!ManifestEntry.bIsStock)
-			{
-				TMap<FString, FString> FilePaths;
-				if (FindModelDiskPaths(NormPath, FilePaths))
-				{
-					ManifestEntry.DiskPaths = MoveTemp(FilePaths);
-				}
-			}
-
-			ModelManifest->Register(ManifestEntry);
-		}
-	}
+	// TODO Phase 18D: Model manifest registration disabled pending SavePackage crash fix.
+	// The manifest Get()->SaveManifest() call chain crashes with access violation.
+	// Re-enable once the root cause is identified.
+	// (void)Mesh; // Mesh is returned below, suppress unused warning
 
 	return Mesh;
 }

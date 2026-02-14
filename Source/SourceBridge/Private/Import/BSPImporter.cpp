@@ -25,7 +25,7 @@ FVMFImportResult FBSPImporter::ImportFile(const FString& BSPPath, UWorld* World,
 
 	FString MapName = FPaths::GetBaseFilename(BSPPath);
 
-	FScopedSlowTask SlowTask(5.0f, FText::FromString(FString::Printf(TEXT("Importing %s..."), *MapName)));
+	FScopedSlowTask SlowTask(4.0f, FText::FromString(FString::Printf(TEXT("Importing %s..."), *MapName)));
 	SlowTask.MakeDialog(true);
 
 	// Output to Saved/SourceBridge/Import/<mapname>/ (absolute path for external tools)
@@ -97,83 +97,18 @@ FVMFImportResult FBSPImporter::ImportFile(const FString& BSPPath, UWorld* World,
 	FVTFReader::DebugDumpPath = OutputDir / TEXT("Debug_Textures");
 
 	// Step 3: Import the decompiled VMF (geometry, entities, materials, models)
-	SlowTask.EnterProgressFrame(2.0f, FText::FromString(TEXT("Importing VMF...")));
+	SlowTask.EnterProgressFrame(1.0f, FText::FromString(TEXT("Importing VMF...")));
 
 	FVMFImportSettings ImportSettings = Settings;
 	ImportSettings.AssetSearchPath = AssetSearchDir;
 	Result = FVMFImporter::ImportFile(VMFPath, World, ImportSettings);
 
-	// Step 4: Post-VMF manifest saves and asset imports (these run AFTER geometry is loaded
-	// to avoid any interference with the material/model import pipeline)
-	SlowTask.EnterProgressFrame(0.5f, FText::FromString(TEXT("Importing sounds...")));
-	{
-		int32 SoundCount = FSoundImporter::ImportSoundsFromDirectory(AssetSearchDir);
-		if (SoundCount > 0)
-		{
-			UE_LOG(LogTemp, Log, TEXT("BSPImporter: Imported %d sounds"), SoundCount);
-		}
-	}
-
-	SlowTask.EnterProgressFrame(0.5f, FText::FromString(TEXT("Importing resources...")));
-	{
-		USourceResourceManifest* ResourceManifest = USourceResourceManifest::Get();
-		if (ResourceManifest)
-		{
-			int32 ResourceCount = 0;
-
-			// Import overview/radar config files
-			FString ResourceDir = AssetSearchDir / TEXT("resource");
-			if (FPaths::DirectoryExists(ResourceDir))
-			{
-				TArray<FString> ResourceFiles;
-				IFileManager::Get().FindFilesRecursive(ResourceFiles, *ResourceDir, TEXT("*.*"), true, false);
-				for (const FString& ResFile : ResourceFiles)
-				{
-					FString RelPath = ResFile;
-					FPaths::MakePathRelativeTo(RelPath, *(AssetSearchDir + TEXT("/")));
-					RelPath.ReplaceInline(TEXT("\\"), TEXT("/"));
-
-					FSourceResourceEntry Entry;
-					Entry.SourcePath = RelPath;
-					Entry.Origin = ESourceResourceOrigin::Imported;
-					Entry.DiskPath = ResFile;
-					Entry.LastImported = FDateTime::Now();
-
-					FString Ext = FPaths::GetExtension(ResFile).ToLower();
-					if (RelPath.Contains(TEXT("overviews")))
-					{
-						Entry.ResourceType = (Ext == TEXT("txt"))
-							? ESourceResourceType::OverviewConfig
-							: ESourceResourceType::Overview;
-
-						// Store text content for config files
-						if (Ext == TEXT("txt"))
-						{
-							FFileHelper::LoadFileToString(Entry.TextContent, *ResFile);
-						}
-					}
-
-					ResourceManifest->Register(Entry);
-					ResourceCount++;
-				}
-			}
-
-			if (ResourceCount > 0)
-			{
-				ResourceManifest->SaveManifest();
-				UE_LOG(LogTemp, Log, TEXT("BSPImporter: Imported %d resource files"), ResourceCount);
-			}
-		}
-	}
-
-	// Save model manifest after VMF import (models are registered during ResolveModel calls)
-	{
-		USourceModelManifest* ModelManifest = USourceModelManifest::Get();
-		if (ModelManifest && ModelManifest->Num() > 0)
-		{
-			ModelManifest->SaveManifest();
-		}
-	}
+	// TODO Phase 18D: Sound, resource, and model manifest saves are disabled during BSP import
+	// pending investigation of SavePackage crash (0xffffffffffffffff access violation).
+	// The model manifest registration in ModelImporter::ResolveModel still tracks entries in
+	// memory for the current session — they're just not persisted to disk yet.
+	// Sound import, resource import, and manifest persistence will be re-enabled once the
+	// root cause (likely USoundWave::RawData bulk data serialization) is identified and fixed.
 
 	return Result;
 }
