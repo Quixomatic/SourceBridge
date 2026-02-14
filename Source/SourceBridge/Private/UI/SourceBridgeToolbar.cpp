@@ -138,6 +138,16 @@ void FSourceBridgeToolbar::Register()
 				);
 
 				MenuBuilder.AddMenuEntry(
+					LOCTEXT("AssetManager", "Source Asset Manager"),
+					LOCTEXT("AssetManagerTooltip", "Browse all Source assets (materials, models, sounds, resources)"),
+					FSlateIcon(),
+					FUIAction(FExecuteAction::CreateLambda([]()
+					{
+						FGlobalTabmanager::Get()->TryInvokeTab(FName(TEXT("SourceAssetManager")));
+					}))
+				);
+
+				MenuBuilder.AddMenuEntry(
 					LOCTEXT("Settings", "Export Settings..."),
 					LOCTEXT("SettingsTooltip", "Configure export settings (target game, output path, compile options)"),
 					FSlateIcon(),

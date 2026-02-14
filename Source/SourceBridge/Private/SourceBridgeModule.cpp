@@ -15,6 +15,7 @@
 #include "UI/VMFPreview.h"
 #include "UI/SourceIOGraphEditor.h"
 #include "UI/SSourceMaterialBrowser.h"
+#include "UI/SourceAssetManager.h"
 #include "Runtime/SourceBridgeGameMode.h"
 #include "HAL/PlatformFilemanager.h"
 #include "Misc/FileHelper.h"
@@ -45,6 +46,7 @@ void FSourceBridgeModule::StartupModule()
 	FVMFPreviewTab::Register();
 	FSourceIOGraphTab::Register();
 	FSourceMaterialBrowserTab::Register();
+	FSourceAssetManagerTab::Register();
 
 	ExportTestBoxRoomCommand = MakeShared<FAutoConsoleCommand>(
 		TEXT("SourceBridge.ExportTestBoxRoom"),
@@ -510,6 +512,7 @@ void FSourceBridgeModule::StartupModule()
 
 void FSourceBridgeModule::ShutdownModule()
 {
+	FSourceAssetManagerTab::Unregister();
 	FSourceMaterialBrowserTab::Unregister();
 	FSourceIOGraphTab::Unregister();
 	FVMFPreviewTab::Unregister();
